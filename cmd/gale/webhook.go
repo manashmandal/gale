@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
@@ -169,12 +168,6 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 	}
 	defer srv.Close()
 
-	// Get local client for TLS certificates
-	lc, err := srv.LocalClient()
-	if err != nil {
-		return fmt.Errorf("getting local client: %w", err)
-	}
-
 	// Get the DNS name for the funnel URL
 	dnsName := status.Self.DNSName
 	if dnsName == "" {
@@ -188,7 +181,8 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 
 	funnelURL := fmt.Sprintf("https://%s/webhook", dnsName)
 
-	// Get funnel listener (HTTPS with auto TLS)
+	// Get funnel listener - Tailscale handles TLS termination at their edge
+	// so we serve plain HTTP on this listener
 	ln, err := srv.ListenFunnel("tcp", ":443")
 	if err != nil {
 		return fmt.Errorf("creating funnel listener: %w", err)
@@ -197,11 +191,6 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 
 	server := &http.Server{
 		Handler: mux,
-		TLSConfig: &tls.Config{
-			GetCertificate: func(hi *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				return lc.GetCertificate(hi)
-			},
-		},
 	}
 
 	go func() {
@@ -236,8 +225,8 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 		logger.Info("webhook signature verification disabled (no secret configured)", "warning", true)
 	}
 
-	// Serve with TLS
-	if err := server.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
+	// Serve plain HTTP - TLS is terminated by Tailscale Funnel
+	if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("server error: %w", err)
 	}
 
