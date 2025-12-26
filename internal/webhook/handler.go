@@ -22,13 +22,13 @@ import (
 type WorkflowJobEvent struct {
 	Action      string `json:"action"` // queued, in_progress, completed
 	WorkflowJob struct {
-		ID          int64    `json:"id"`
-		RunID       int64    `json:"run_id"`
-		Name        string   `json:"name"`
-		Status      string   `json:"status"`
-		Labels      []string `json:"labels"`
-		RunnerName  string   `json:"runner_name"`
-		RunnerID    int64    `json:"runner_id"`
+		ID         int64    `json:"id"`
+		RunID      int64    `json:"run_id"`
+		Name       string   `json:"name"`
+		Status     string   `json:"status"`
+		Labels     []string `json:"labels"`
+		RunnerName string   `json:"runner_name"`
+		RunnerID   int64    `json:"runner_id"`
 	} `json:"workflow_job"`
 	Repository struct {
 		FullName string `json:"full_name"`

@@ -564,7 +564,7 @@ func TestScaler_Run_ContextCancel(t *testing.T) {
 
 func TestScaler_OrgScope(t *testing.T) {
 	cfg := testConfig()
-	cfg.GitHub.Repo = ""   // No specific repo
+	cfg.GitHub.Repo = "" // No specific repo
 	cfg.GitHub.Scope = "org"
 	cfg.Scaler.MinRunners = 1
 	logger := testLogger()

@@ -9,12 +9,12 @@ import (
 )
 
 type Config struct {
-	GitHub   GitHubConfig   `yaml:"github"`
-	Docker   DockerConfig   `yaml:"docker"`
-	Scaler   ScalerConfig   `yaml:"scaler"`
-	Runner   RunnerConfig   `yaml:"runner"`
-	Webhook  WebhookConfig  `yaml:"webhook"`
-	LogLevel string         `yaml:"log_level"`
+	GitHub   GitHubConfig  `yaml:"github"`
+	Docker   DockerConfig  `yaml:"docker"`
+	Scaler   ScalerConfig  `yaml:"scaler"`
+	Runner   RunnerConfig  `yaml:"runner"`
+	Webhook  WebhookConfig `yaml:"webhook"`
+	LogLevel string        `yaml:"log_level"`
 }
 
 type WebhookConfig struct {

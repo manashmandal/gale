@@ -117,8 +117,8 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 	}
 
 	containerConfig := &container.Config{
-		Image:  cfg.Image,
-		Env:    env,
+		Image: cfg.Image,
+		Env:   env,
 		Labels: map[string]string{
 			LabelManagedBy: ManagedByValue,
 			LabelRunnerID:  runnerID,

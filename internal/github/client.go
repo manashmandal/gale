@@ -31,9 +31,9 @@ type Client struct {
 	forceMode      bool
 
 	// Local rate limiting (calls per minute)
-	callsMu       sync.Mutex
-	callTimes     []time.Time
-	callsPerMin   int
+	callsMu     sync.Mutex
+	callTimes   []time.Time
+	callsPerMin int
 }
 
 type QueuedJob struct {
