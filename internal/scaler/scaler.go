@@ -43,10 +43,16 @@ func New(cfg *config.Config, logger *slog.Logger) (*Scaler, error) {
 }
 
 func NewWithOptions(cfg *config.Config, logger *slog.Logger, opts Options) (*Scaler, error) {
+	// For multi-repo mode, use first repo or empty for org-level
+	repo := cfg.GitHub.Repo
+	if repo == "" && len(cfg.GitHub.Repos) > 0 {
+		repo = cfg.GitHub.Repos[0]
+	}
+
 	gh := github.NewClientWithOptions(github.ClientOptions{
 		Token:     cfg.GitHub.Token,
 		Owner:     cfg.GitHub.Owner,
-		Repo:      cfg.GitHub.Repo,
+		Repo:      repo,
 		Scope:     cfg.GitHub.Scope,
 		Threshold: cfg.Scaler.RateLimitThreshold,
 		Force:     opts.Force,
@@ -72,10 +78,16 @@ func (s *Scaler) Close() error {
 
 func (s *Scaler) Run(ctx context.Context) error {
 	scope := "repo"
-	target := fmt.Sprintf("%s/%s", s.cfg.GitHub.Owner, s.cfg.GitHub.Repo)
-	if s.cfg.IsOrgScope() {
+	repos := s.cfg.GetRepos()
+	var target string
+	if len(repos) == 0 {
 		scope = "org"
 		target = s.cfg.GitHub.Owner
+	} else if len(repos) == 1 {
+		target = fmt.Sprintf("%s/%s", s.cfg.GitHub.Owner, repos[0])
+	} else {
+		scope = "repos"
+		target = fmt.Sprintf("%d repos", len(repos))
 	}
 
 	s.logger.Info("starting autoscaler",
