@@ -44,35 +44,46 @@ func NewMockClient() *MockClient {
 			Status:      "running",
 			Repo:        cfg.RepoURL,
 		}
+		m.mu.Lock()
 		m.runners = append(m.runners, *runner)
+		m.mu.Unlock()
 		return runner, nil
 	}
 
 	m.ListRunnersFunc = func(ctx context.Context) ([]Runner, error) {
-		return m.runners, nil
+		m.mu.Lock()
+		result := make([]Runner, len(m.runners))
+		copy(result, m.runners)
+		m.mu.Unlock()
+		return result, nil
 	}
 
 	m.GetActiveRunnerCountFunc = func(ctx context.Context) (int, error) {
+		m.mu.Lock()
 		count := 0
 		for _, r := range m.runners {
 			if r.Status == "running" {
 				count++
 			}
 		}
+		m.mu.Unlock()
 		return count, nil
 	}
 
 	m.RemoveRunnerFunc = func(ctx context.Context, containerID string) error {
+		m.mu.Lock()
 		for i, r := range m.runners {
 			if r.ContainerID == containerID {
 				m.runners = append(m.runners[:i], m.runners[i+1:]...)
 				break
 			}
 		}
+		m.mu.Unlock()
 		return nil
 	}
 
 	m.CleanupExitedRunnersFunc = func(ctx context.Context) (int, error) {
+		m.mu.Lock()
 		cleaned := 0
 		remaining := []Runner{}
 		for _, r := range m.runners {
@@ -83,6 +94,7 @@ func NewMockClient() *MockClient {
 			}
 		}
 		m.runners = remaining
+		m.mu.Unlock()
 		return cleaned, nil
 	}
 
