@@ -9,11 +9,24 @@ import (
 	"github.com/google/go-github/v68/github"
 )
 
+const (
+	DefaultRateLimitThreshold = 2500 // Stop at 2500 of 5000 calls
+)
+
+// ErrRateLimitThreshold is returned when rate limit threshold is reached
+var ErrRateLimitThreshold = fmt.Errorf("rate limit threshold reached")
+
 type Client struct {
 	client *github.Client
 	owner  string
 	repo   string // empty for org-level
 	scope  string // "org" or "repo"
+
+	mu             sync.RWMutex
+	rateLimitUsed  int
+	rateLimitLimit int
+	threshold      int
+	forceMode      bool
 }
 
 type QueuedJob struct {
@@ -24,14 +37,79 @@ type QueuedJob struct {
 	Repo    string // owner/repo format
 }
 
+type ClientOptions struct {
+	Token     string
+	Owner     string
+	Repo      string
+	Scope     string
+	Threshold int  // Rate limit threshold (default 2500)
+	Force     bool // Ignore threshold
+}
+
 func NewClient(token, owner, repo, scope string) *Client {
-	client := github.NewClient(nil).WithAuthToken(token)
-	return &Client{
-		client: client,
-		owner:  owner,
-		repo:   repo,
-		scope:  scope,
+	return NewClientWithOptions(ClientOptions{
+		Token:     token,
+		Owner:     owner,
+		Repo:      repo,
+		Scope:     scope,
+		Threshold: DefaultRateLimitThreshold,
+		Force:     false,
+	})
+}
+
+func NewClientWithOptions(opts ClientOptions) *Client {
+	client := github.NewClient(nil).WithAuthToken(opts.Token)
+	threshold := opts.Threshold
+	if threshold <= 0 {
+		threshold = DefaultRateLimitThreshold
 	}
+	return &Client{
+		client:    client,
+		owner:     opts.Owner,
+		repo:      opts.Repo,
+		scope:     opts.Scope,
+		threshold: threshold,
+		forceMode: opts.Force,
+	}
+}
+
+// SetForceMode enables/disables force mode (ignores rate limit threshold)
+func (c *Client) SetForceMode(force bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.forceMode = force
+}
+
+// GetRateLimitInfo returns current rate limit usage
+func (c *Client) GetRateLimitInfo() (used, limit, threshold int, force bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.rateLimitUsed, c.rateLimitLimit, c.threshold, c.forceMode
+}
+
+// updateRateLimit updates rate limit info from response
+func (c *Client) updateRateLimit(resp *github.Response) {
+	if resp == nil || resp.Rate.Limit == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rateLimitUsed = resp.Rate.Limit - resp.Rate.Remaining
+	c.rateLimitLimit = resp.Rate.Limit
+}
+
+// checkRateLimit returns error if threshold exceeded (unless force mode)
+func (c *Client) checkRateLimit() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.forceMode {
+		return nil
+	}
+	if c.rateLimitUsed >= c.threshold {
+		return fmt.Errorf("%w: used %d/%d (threshold: %d). Use --force to override",
+			ErrRateLimitThreshold, c.rateLimitUsed, c.rateLimitLimit, c.threshold)
+	}
+	return nil
 }
 
 func (c *Client) IsOrgScope() bool {
@@ -86,6 +164,11 @@ func (c *Client) getOrgQueuedJobs(ctx context.Context) ([]QueuedJob, error) {
 }
 
 func (c *Client) getRepoQueuedJobs(ctx context.Context, owner, repo string) ([]QueuedJob, error) {
+	// Check rate limit before making calls
+	if err := c.checkRateLimit(); err != nil {
+		return nil, err
+	}
+
 	var queuedJobs []QueuedJob
 	repoFullName := fmt.Sprintf("%s/%s", owner, repo)
 
@@ -95,13 +178,19 @@ func (c *Client) getRepoQueuedJobs(ctx context.Context, owner, repo string) ([]Q
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
-	queuedRuns, _, err := c.client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
+	queuedRuns, resp, err := c.client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
+	c.updateRateLimit(resp)
 	if err != nil {
 		return nil, fmt.Errorf("listing queued runs: %w", err)
 	}
 
+	if err := c.checkRateLimit(); err != nil {
+		return nil, err
+	}
+
 	opts.Status = "in_progress"
-	inProgressRuns, _, err := c.client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
+	inProgressRuns, resp, err := c.client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
+	c.updateRateLimit(resp)
 	if err != nil {
 		return nil, fmt.Errorf("listing in-progress runs: %w", err)
 	}
@@ -109,10 +198,15 @@ func (c *Client) getRepoQueuedJobs(ctx context.Context, owner, repo string) ([]Q
 	allRuns := append(queuedRuns.WorkflowRuns, inProgressRuns.WorkflowRuns...)
 
 	for _, run := range allRuns {
-		jobs, _, err := c.client.Actions.ListWorkflowJobs(ctx, owner, repo, *run.ID, &github.ListWorkflowJobsOptions{
+		if err := c.checkRateLimit(); err != nil {
+			return queuedJobs, err // Return what we have so far
+		}
+
+		jobs, resp, err := c.client.Actions.ListWorkflowJobs(ctx, owner, repo, *run.ID, &github.ListWorkflowJobsOptions{
 			Filter:      "all",
 			ListOptions: github.ListOptions{PerPage: 100},
 		})
+		c.updateRateLimit(resp)
 		if err != nil {
 			continue
 		}
@@ -160,6 +254,10 @@ type Repo struct {
 }
 
 func (c *Client) listRepos(ctx context.Context) ([]Repo, error) {
+	if err := c.checkRateLimit(); err != nil {
+		return nil, err
+	}
+
 	var allRepos []Repo
 
 	// Try to list organization repos first
@@ -168,7 +266,12 @@ func (c *Client) listRepos(ctx context.Context) ([]Repo, error) {
 	}
 
 	for {
+		if err := c.checkRateLimit(); err != nil {
+			return allRepos, err // Return what we have
+		}
+
 		repos, resp, err := c.client.Repositories.ListByOrg(ctx, c.owner, opts)
+		c.updateRateLimit(resp)
 		if err != nil {
 			// If org listing fails, try user repos
 			return c.listUserRepos(ctx)
@@ -193,6 +296,10 @@ func (c *Client) listRepos(ctx context.Context) ([]Repo, error) {
 }
 
 func (c *Client) listUserRepos(ctx context.Context) ([]Repo, error) {
+	if err := c.checkRateLimit(); err != nil {
+		return nil, err
+	}
+
 	var allRepos []Repo
 
 	opts := &github.RepositoryListByUserOptions{
@@ -201,7 +308,12 @@ func (c *Client) listUserRepos(ctx context.Context) ([]Repo, error) {
 	}
 
 	for {
+		if err := c.checkRateLimit(); err != nil {
+			return allRepos, err // Return what we have
+		}
+
 		repos, resp, err := c.client.Repositories.ListByUser(ctx, c.owner, opts)
+		c.updateRateLimit(resp)
 		if err != nil {
 			return nil, fmt.Errorf("listing user repos: %w", err)
 		}

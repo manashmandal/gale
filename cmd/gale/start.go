@@ -13,6 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	forceMode bool
+)
+
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the autoscaler",
@@ -22,15 +26,20 @@ The autoscaler will:
   - Poll GitHub for queued self-hosted jobs
   - Spawn Docker-based runners on demand
   - Clean up exited runners automatically
+  - Stop when API rate limit threshold (2500 calls) is reached
+
+Use --force to ignore the rate limit threshold (not recommended).
 
 Example:
   gale start
   gale start --config /etc/gale/config.yaml
-  gale start --log-level debug`,
+  gale start --log-level debug
+  gale start --force  # Ignore rate limit threshold`,
 	RunE: runStart,
 }
 
 func init() {
+	startCmd.Flags().BoolVarP(&forceMode, "force", "f", false, "ignore rate limit threshold (use with caution)")
 	rootCmd.AddCommand(startCmd)
 }
 
@@ -46,7 +55,17 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	logger := setupLogger(cfg.LogLevel)
 
-	s, err := scaler.New(cfg, logger)
+	opts := scaler.Options{
+		Force: forceMode,
+	}
+
+	if forceMode {
+		logger.Warn("running in force mode - rate limit threshold will be ignored")
+	} else {
+		logger.Info("rate limit protection enabled", "threshold", cfg.Scaler.RateLimitThreshold)
+	}
+
+	s, err := scaler.NewWithOptions(cfg, logger, opts)
 	if err != nil {
 		return fmt.Errorf("creating scaler: %w", err)
 	}

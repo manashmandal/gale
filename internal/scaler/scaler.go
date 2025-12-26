@@ -21,17 +21,36 @@ type Scaler struct {
 	mu            sync.Mutex
 	lastScaleUp   time.Time
 	pendingScales int
+	forceMode     bool
 }
 
 type Stats struct {
-	QueuedJobs    int
-	ActiveRunners int
-	MaxRunners    int
-	MinRunners    int
+	QueuedJobs      int
+	ActiveRunners   int
+	MaxRunners      int
+	MinRunners      int
+	RateLimitUsed   int
+	RateLimitLimit  int
+	RateLimitThresh int
+}
+
+type Options struct {
+	Force bool // Ignore rate limit threshold
 }
 
 func New(cfg *config.Config, logger *slog.Logger) (*Scaler, error) {
-	gh := github.NewClient(cfg.GitHub.Token, cfg.GitHub.Owner, cfg.GitHub.Repo, cfg.GitHub.Scope)
+	return NewWithOptions(cfg, logger, Options{})
+}
+
+func NewWithOptions(cfg *config.Config, logger *slog.Logger, opts Options) (*Scaler, error) {
+	gh := github.NewClientWithOptions(github.ClientOptions{
+		Token:     cfg.GitHub.Token,
+		Owner:     cfg.GitHub.Owner,
+		Repo:      cfg.GitHub.Repo,
+		Scope:     cfg.GitHub.Scope,
+		Threshold: cfg.Scaler.RateLimitThreshold,
+		Force:     opts.Force,
+	})
 
 	dockerClient, err := docker.NewClient(cfg.Docker.Host)
 	if err != nil {
@@ -39,10 +58,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*Scaler, error) {
 	}
 
 	return &Scaler{
-		cfg:    cfg,
-		gh:     gh,
-		docker: dockerClient,
-		logger: logger,
+		cfg:       cfg,
+		gh:        gh,
+		docker:    dockerClient,
+		logger:    logger,
+		forceMode: opts.Force,
 	}, nil
 }
 
@@ -257,10 +277,15 @@ func (s *Scaler) GetStats(ctx context.Context) (*Stats, error) {
 		return nil, err
 	}
 
+	used, limit, threshold, _ := s.gh.GetRateLimitInfo()
+
 	return &Stats{
-		QueuedJobs:    len(queuedJobs),
-		ActiveRunners: activeRunners,
-		MaxRunners:    s.cfg.Scaler.MaxRunners,
-		MinRunners:    s.cfg.Scaler.MinRunners,
+		QueuedJobs:      len(queuedJobs),
+		ActiveRunners:   activeRunners,
+		MaxRunners:      s.cfg.Scaler.MaxRunners,
+		MinRunners:      s.cfg.Scaler.MinRunners,
+		RateLimitUsed:   used,
+		RateLimitLimit:  limit,
+		RateLimitThresh: threshold,
 	}, nil
 }

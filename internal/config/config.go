@@ -29,10 +29,11 @@ type DockerConfig struct {
 }
 
 type ScalerConfig struct {
-	MinRunners   int           `yaml:"min_runners"`
-	MaxRunners   int           `yaml:"max_runners"`
-	PollInterval time.Duration `yaml:"poll_interval"`
-	ScaleUpDelay time.Duration `yaml:"scale_up_delay"`
+	MinRunners         int           `yaml:"min_runners"`
+	MaxRunners         int           `yaml:"max_runners"`
+	PollInterval       time.Duration `yaml:"poll_interval"`
+	ScaleUpDelay       time.Duration `yaml:"scale_up_delay"`
+	RateLimitThreshold int           `yaml:"rate_limit_threshold"` // Stop at this many API calls (default 2500)
 }
 
 type RunnerConfig struct {
@@ -69,6 +70,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Scaler.PollInterval == 0 {
 		c.Scaler.PollInterval = 10 * time.Second
+	}
+	if c.Scaler.RateLimitThreshold == 0 {
+		c.Scaler.RateLimitThreshold = 2500 // Default: stop at 2500 of 5000 calls
 	}
 	if c.Runner.Image == "" {
 		c.Runner.Image = "myoung34/github-runner:latest"
