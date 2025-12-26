@@ -27,6 +27,16 @@ type GitHubConfig struct {
 	Owner string `yaml:"owner"`
 	Repo  string `yaml:"repo"`  // Optional: if empty, monitors all repos
 	Scope string `yaml:"scope"` // "org" or "repo" (default: org if repo is empty)
+
+	// GitHub App configuration (alternative to PAT)
+	App GitHubAppConfig `yaml:"app"`
+}
+
+type GitHubAppConfig struct {
+	AppID          int64  `yaml:"app_id"`
+	PrivateKeyPath string `yaml:"private_key_path"` // Path to .pem file
+	PrivateKey     string `yaml:"private_key"`      // Or inline PEM content
+	WebhookSecret  string `yaml:"webhook_secret"`
 }
 
 type DockerConfig struct {
@@ -104,4 +114,42 @@ func (c *Config) setDefaults() {
 
 func (c *Config) IsOrgScope() bool {
 	return c.GitHub.Scope == "org"
+}
+
+// IsAppMode returns true if using GitHub App authentication
+func (c *Config) IsAppMode() bool {
+	return c.GitHub.App.AppID > 0
+}
+
+// GetPrivateKey returns the private key PEM data from file, env var, or inline config
+func (c *Config) GetPrivateKey() ([]byte, error) {
+	// Try inline first
+	if c.GitHub.App.PrivateKey != "" {
+		return []byte(os.ExpandEnv(c.GitHub.App.PrivateKey)), nil
+	}
+
+	// Try environment variable
+	if envKey := os.Getenv("GALE_PRIVATE_KEY"); envKey != "" {
+		return []byte(envKey), nil
+	}
+
+	// Try file path
+	if c.GitHub.App.PrivateKeyPath != "" {
+		path := os.ExpandEnv(c.GitHub.App.PrivateKeyPath)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading private key file %s: %w", path, err)
+		}
+		return data, nil
+	}
+
+	return nil, fmt.Errorf("no private key configured (set private_key_path, private_key, or GALE_PRIVATE_KEY env var)")
+}
+
+// GetWebhookSecret returns the webhook secret, preferring app config over webhook config
+func (c *Config) GetWebhookSecret() string {
+	if c.GitHub.App.WebhookSecret != "" {
+		return os.ExpandEnv(c.GitHub.App.WebhookSecret)
+	}
+	return c.Webhook.Secret
 }

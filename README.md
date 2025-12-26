@@ -10,6 +10,8 @@ A JIT (Just-In-Time) autoscaler for GitHub Actions self-hosted runners. Gale mon
 - **Auto Cleanup**: Exited containers are automatically removed
 - **Docker-based**: Uses the popular `myoung34/github-runner` image
 - **Configurable**: Set max runners, poll intervals, labels, and more
+- **Webhook Mode**: Event-driven scaling via GitHub webhooks (recommended)
+- **GitHub App Support**: Better security with auto-rotating tokens and higher rate limits
 
 ## Installation
 
@@ -160,6 +162,27 @@ A warm pool keeps runners pre-started and ready to pick up jobs immediately, eli
 gale version
 ```
 
+### `gale webhook` - Webhook Server (Recommended)
+
+```bash
+gale webhook                 # Start webhook server
+gale webhook --port 9000     # Use custom port
+gale webhook -l debug        # Enable debug logging
+```
+
+Webhook mode receives GitHub events directly instead of polling the API. Benefits:
+- No API rate limiting issues
+- Instant response to new jobs
+- Lower resource usage
+
+### `gale app` - GitHub App Management
+
+```bash
+gale app setup              # Show setup instructions
+gale app validate           # Validate app configuration
+gale app create             # Interactive app creation wizard
+```
+
 ## Usage Examples
 
 ### Example: Single Repository
@@ -281,9 +304,116 @@ docker run -d \
 When monitoring many repositories (org mode), gale makes multiple API calls per poll cycle. GitHub's API rate limit is 5000 requests/hour for authenticated requests.
 
 To reduce API usage:
+- **Use webhook mode** (recommended) - eliminates polling entirely
+- **Use GitHub App** - gets 5000 requests/hour per installation
 - Increase `poll_interval` (e.g., `30s` or `60s`)
 - Use single-repo mode for high-frequency polling
-- Consider caching (future feature)
+
+## Webhook Mode (Recommended)
+
+Instead of polling the GitHub API, Gale can receive webhook events directly from GitHub when jobs are queued. This is the recommended mode for production use.
+
+### Webhook Setup
+
+1. Configure your webhook in GitHub:
+   - Go to your repo or org Settings > Webhooks > Add webhook
+   - **Payload URL**: `https://your-server:8080/webhook`
+   - **Content type**: `application/json`
+   - **Secret**: (optional but recommended)
+   - **Events**: Select "Workflow jobs"
+
+2. Configure Gale:
+```yaml
+webhook:
+  port: 8080
+  secret: ${GALE_WEBHOOK_SECRET}  # Optional
+```
+
+3. Start Gale:
+```bash
+gale webhook
+```
+
+## GitHub App Authentication
+
+GitHub Apps provide significant advantages over Personal Access Tokens:
+
+| Feature | PAT | GitHub App |
+|---------|-----|------------|
+| Rate Limit | 5,000/hr shared | 5,000/hr per installation |
+| Token Rotation | Manual | Automatic (1hr tokens) |
+| Permissions | User-wide | Granular per-app |
+| Multi-org | Separate PATs | Single app, multiple installs |
+| Security | Long-lived | Short-lived tokens |
+| Webhook | Manual per-repo | Configured in app |
+
+### Quick Start with GitHub App
+
+1. Create a GitHub App:
+```bash
+gale app create
+```
+
+2. Or view manual setup instructions:
+```bash
+gale app setup
+```
+
+3. Configure Gale:
+```yaml
+github:
+  app:
+    app_id: 123456
+    private_key_path: /path/to/private-key.pem
+    webhook_secret: ${GALE_WEBHOOK_SECRET}
+```
+
+4. Validate configuration:
+```bash
+gale app validate
+```
+
+5. Start webhook server:
+```bash
+gale webhook
+```
+
+### GitHub App Permissions
+
+When creating your GitHub App, configure these permissions:
+
+**Repository permissions:**
+- Actions: Read-only
+- Metadata: Read-only
+
+**Subscribe to events:**
+- Workflow jobs
+
+### Private Key Options
+
+You can provide the private key in three ways:
+
+1. **File path** (recommended):
+```yaml
+github:
+  app:
+    private_key_path: /etc/gale/private-key.pem
+```
+
+2. **Environment variable**:
+```bash
+export GALE_PRIVATE_KEY="$(cat /path/to/key.pem)"
+```
+
+3. **Inline in config** (not recommended for production):
+```yaml
+github:
+  app:
+    private_key: |
+      -----BEGIN RSA PRIVATE KEY-----
+      ...
+      -----END RSA PRIVATE KEY-----
+```
 
 ## Deployment with Kamal
 

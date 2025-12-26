@@ -15,6 +15,7 @@ import (
 
 	"github.com/manashmandal/gale/internal/config"
 	"github.com/manashmandal/gale/internal/docker"
+	"github.com/manashmandal/gale/internal/github"
 )
 
 // WorkflowJobEvent represents GitHub's workflow_job webhook payload
@@ -33,16 +34,20 @@ type WorkflowJobEvent struct {
 		FullName string `json:"full_name"`
 		HTMLURL  string `json:"html_url"`
 	} `json:"repository"`
+	Installation struct {
+		ID int64 `json:"id"`
+	} `json:"installation"`
 }
 
 type Handler struct {
-	cfg    *config.Config
-	docker *docker.Client
-	logger *slog.Logger
-	secret string
+	cfg       *config.Config
+	docker    *docker.Client
+	appClient *github.AppClient // nil if using PAT mode
+	logger    *slog.Logger
+	secret    string
 
-	mu             sync.Mutex
-	activeRunners  map[int64]string // jobID -> containerID
+	mu            sync.Mutex
+	activeRunners map[int64]string // jobID -> containerID
 }
 
 func NewHandler(cfg *config.Config, logger *slog.Logger) (*Handler, error) {
@@ -51,13 +56,32 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (*Handler, error) {
 		return nil, fmt.Errorf("creating docker client: %w", err)
 	}
 
-	return &Handler{
+	h := &Handler{
 		cfg:           cfg,
 		docker:        dockerClient,
 		logger:        logger,
-		secret:        cfg.Webhook.Secret,
+		secret:        cfg.GetWebhookSecret(),
 		activeRunners: make(map[int64]string),
-	}, nil
+	}
+
+	// Initialize GitHub App client if in app mode
+	if cfg.IsAppMode() {
+		privateKey, err := cfg.GetPrivateKey()
+		if err != nil {
+			return nil, fmt.Errorf("getting private key: %w", err)
+		}
+
+		appClient, err := github.NewAppClient(cfg.GitHub.App.AppID, privateKey)
+		if err != nil {
+			return nil, fmt.Errorf("creating app client: %w", err)
+		}
+		h.appClient = appClient
+		logger.Info("using GitHub App authentication", "app_id", cfg.GitHub.App.AppID)
+	} else {
+		logger.Info("using PAT authentication")
+	}
+
+	return h, nil
 }
 
 func (h *Handler) Close() error {
@@ -144,10 +168,31 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 		return
 	}
 
+	// Get token - either from GitHub App or PAT
+	var token string
+	if h.appClient != nil {
+		// GitHub App mode - get installation token
+		if event.Installation.ID == 0 {
+			h.logger.Error("no installation ID in webhook payload")
+			return
+		}
+
+		var err error
+		token, err = h.appClient.GetInstallationToken(ctx, event.Installation.ID)
+		if err != nil {
+			h.logger.Error("failed to get installation token", "error", err, "installation_id", event.Installation.ID)
+			return
+		}
+		h.logger.Debug("got installation token", "installation_id", event.Installation.ID)
+	} else {
+		// PAT mode
+		token = h.cfg.GitHub.Token
+	}
+
 	// Spawn runner
 	runnerCfg := docker.RunnerConfig{
 		Image:       h.cfg.Runner.Image,
-		Token:       h.cfg.GitHub.Token,
+		Token:       token,
 		RepoURL:     event.Repository.HTMLURL,
 		Labels:      h.cfg.Runner.Labels,
 		Env:         h.cfg.Runner.Env,
