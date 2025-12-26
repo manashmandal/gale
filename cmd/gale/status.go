@@ -49,10 +49,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	} else if len(repos) == 1 {
 		fmt.Fprintf(w, "Repository:\t%s\n", repos[0])
 	} else {
-		fmt.Fprintf(w, "Repositories:\t%d repos\n", len(repos))
-		for _, r := range repos {
-			fmt.Fprintf(w, "  -\t%s\n", r)
-		}
+		fmt.Fprintf(w, "Repositories:\t%s\n", fmt.Sprintf("%v", repos))
 	}
 	fmt.Fprintf(w, "Scope:\t%s\n", cfg.GitHub.Scope)
 	fmt.Fprintf(w, "Max runners:\t%d\n", cfg.Scaler.MaxRunners)
@@ -97,31 +94,53 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	ghClient := github.NewClient(cfg.GitHub.Token, cfg.GitHub.Owner, cfg.GitHub.Repo, cfg.GitHub.Scope)
-	jobs, err := ghClient.GetQueuedJobs(ctx)
-	if err != nil {
-		fmt.Printf("Error fetching jobs: %v\n", err)
-		return nil
-	}
-
-	if len(jobs) == 0 {
-		fmt.Println("No queued jobs")
+	// Multi-repo mode - query each repo individually
+	repos = cfg.GetRepos()
+	if len(repos) == 0 {
+		// Org mode - use original behavior
+		ghClient := github.NewClient(cfg.GitHub.Token, cfg.GitHub.Owner, "", cfg.GitHub.Scope)
+		jobs, err := ghClient.GetQueuedJobs(ctx)
+		if err != nil {
+			fmt.Printf("Error fetching jobs: %v\n", err)
+			return nil
+		}
+		printJobs(jobs)
 	} else {
-		fmt.Printf("Queued jobs: %d\n\n", len(jobs))
-
-		// Group by repo
-		byRepo := make(map[string][]github.QueuedJob)
-		for _, j := range jobs {
-			byRepo[j.Repo] = append(byRepo[j.Repo], j)
-		}
-
-		for repo, repoJobs := range byRepo {
-			fmt.Printf("  %s: %d job(s)\n", repo, len(repoJobs))
-			for _, j := range repoJobs {
-				fmt.Printf("    - %s (%s)\n", j.JobName, j.Status)
+		// Query each repo
+		var allJobs []github.QueuedJob
+		for _, repo := range repos {
+			ghClient := github.NewClient(cfg.GitHub.Token, cfg.GitHub.Owner, repo, "repo")
+			jobs, err := ghClient.GetQueuedJobs(ctx)
+			if err != nil {
+				fmt.Printf("Error fetching jobs for %s: %v\n", repo, err)
+				continue
 			}
+			allJobs = append(allJobs, jobs...)
 		}
+		printJobs(allJobs)
 	}
 
 	return nil
+}
+
+func printJobs(jobs []github.QueuedJob) {
+	if len(jobs) == 0 {
+		fmt.Println("No queued jobs")
+		return
+	}
+
+	fmt.Printf("Queued jobs: %d\n\n", len(jobs))
+
+	// Group by repo
+	byRepo := make(map[string][]github.QueuedJob)
+	for _, j := range jobs {
+		byRepo[j.Repo] = append(byRepo[j.Repo], j)
+	}
+
+	for repo, repoJobs := range byRepo {
+		fmt.Printf("  %s: %d job(s)\n", repo, len(repoJobs))
+		for _, j := range repoJobs {
+			fmt.Printf("    - %s (%s)\n", j.JobName, j.Status)
+		}
+	}
 }
