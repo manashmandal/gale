@@ -31,7 +31,7 @@ type Stats struct {
 }
 
 func New(cfg *config.Config, logger *slog.Logger) (*Scaler, error) {
-	gh := github.NewClient(cfg.GitHub.Token, cfg.GitHub.Owner, cfg.GitHub.Repo)
+	gh := github.NewClient(cfg.GitHub.Token, cfg.GitHub.Owner, cfg.GitHub.Repo, cfg.GitHub.Scope)
 
 	dockerClient, err := docker.NewClient(cfg.Docker.Host)
 	if err != nil {
@@ -51,8 +51,16 @@ func (s *Scaler) Close() error {
 }
 
 func (s *Scaler) Run(ctx context.Context) error {
+	scope := "repo"
+	target := fmt.Sprintf("%s/%s", s.cfg.GitHub.Owner, s.cfg.GitHub.Repo)
+	if s.cfg.IsOrgScope() {
+		scope = "org"
+		target = s.cfg.GitHub.Owner
+	}
+
 	s.logger.Info("starting autoscaler",
-		"repo", fmt.Sprintf("%s/%s", s.cfg.GitHub.Owner, s.cfg.GitHub.Repo),
+		"scope", scope,
+		"target", target,
 		"max_runners", s.cfg.Scaler.MaxRunners,
 		"poll_interval", s.cfg.Scaler.PollInterval,
 	)
@@ -109,6 +117,17 @@ func (s *Scaler) reconcile(ctx context.Context) {
 		"active_runners", activeRunners,
 	)
 
+	if demand > 0 {
+		// Log which repos have queued jobs
+		repoJobs := make(map[string]int)
+		for _, job := range queuedJobs {
+			repoJobs[job.Repo]++
+		}
+		for repo, count := range repoJobs {
+			s.logger.Debug("queued jobs by repo", "repo", repo, "count", count)
+		}
+	}
+
 	// Calculate desired runner count
 	desired := demand
 	if desired < s.cfg.Scaler.MinRunners {
@@ -120,11 +139,11 @@ func (s *Scaler) reconcile(ctx context.Context) {
 
 	// Scale up if needed
 	if desired > activeRunners {
-		s.scaleUp(ctx, desired-activeRunners)
+		s.scaleUp(ctx, desired-activeRunners, queuedJobs)
 	}
 }
 
-func (s *Scaler) scaleUp(ctx context.Context, count int) {
+func (s *Scaler) scaleUp(ctx context.Context, count int, jobs []github.QueuedJob) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -136,28 +155,50 @@ func (s *Scaler) scaleUp(ctx context.Context, count int) {
 
 	s.logger.Info("scaling up runners", "count", count)
 
-	repoURL := fmt.Sprintf("https://github.com/%s/%s", s.cfg.GitHub.Owner, s.cfg.GitHub.Repo)
-
 	var wg sync.WaitGroup
+
+	// Spawn runners - for repo scope, spawn for specific repos
+	// For org scope, just spawn generic org runners
 	for i := 0; i < count; i++ {
 		wg.Add(1)
-		go func() {
+
+		// Determine which repo this runner is for
+		var targetRepo string
+		if i < len(jobs) {
+			targetRepo = jobs[i].Repo
+		} else if len(jobs) > 0 {
+			targetRepo = jobs[0].Repo
+		}
+
+		go func(repo string) {
 			defer wg.Done()
 
-			runner, err := s.docker.CreateRunner(ctx, docker.RunnerConfig{
+			cfg := docker.RunnerConfig{
 				Image:       s.cfg.Runner.Image,
 				Token:       s.cfg.GitHub.Token,
-				RepoURL:     repoURL,
 				Labels:      s.cfg.Runner.Labels,
 				Env:         s.cfg.Runner.Env,
 				NetworkMode: s.cfg.Runner.NetworkMode,
-			})
+				Scope:       s.cfg.GitHub.Scope,
+			}
+
+			if s.cfg.IsOrgScope() {
+				cfg.OrgName = s.cfg.GitHub.Owner
+			} else {
+				cfg.RepoURL = fmt.Sprintf("https://github.com/%s", repo)
+			}
+
+			runner, err := s.docker.CreateRunner(ctx, cfg)
 			if err != nil {
-				s.logger.Error("failed to create runner", "error", err)
+				s.logger.Error("failed to create runner", "error", err, "repo", repo)
 				return
 			}
-			s.logger.Info("created runner", "runner_id", runner.ID, "container_id", runner.ContainerID[:12])
-		}()
+			s.logger.Info("created runner",
+				"runner_id", runner.ID,
+				"container_id", runner.ContainerID[:12],
+				"target", repo,
+			)
+		}(targetRepo)
 	}
 	wg.Wait()
 

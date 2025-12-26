@@ -2,15 +2,21 @@
 # Configuration file
 
 github:
-  # GitHub Personal Access Token (requires 'repo' scope)
-  # Can also be set via GITHUB_TOKEN environment variable
+  # GitHub Personal Access Token (requires 'repo' scope for repo-level, 'admin:org' for org-level)
   token: ${GITHUB_TOKEN}
 
-  # Repository owner (user or organization)
+  # Owner (username or organization name)
   owner: ${GITHUB_OWNER}
 
-  # Repository name
-  repo: ${GITHUB_REPO}
+  # Repository name (optional - leave empty for org-wide monitoring)
+  # If empty, gale will monitor ALL repos under the owner
+  repo: ${GITHUB_REPO:-}
+
+  # Scope: "org" or "repo"
+  # - "org": Monitor all repos, spawn org-level runners (works for all repos)
+  # - "repo": Monitor single repo only
+  # Default: "org" if repo is empty, "repo" otherwise
+  scope: ${GITHUB_SCOPE:-}
 
 docker:
   # Docker host (default: unix:///var/run/docker.sock)

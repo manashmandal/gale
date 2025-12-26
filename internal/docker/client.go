@@ -17,6 +17,7 @@ import (
 const (
 	LabelManagedBy = "gale.managed-by"
 	LabelRunnerID  = "gale.runner-id"
+	LabelRepo      = "gale.repo"
 	ManagedByValue = "gale"
 )
 
@@ -25,18 +26,21 @@ type Client struct {
 }
 
 type RunnerConfig struct {
-	Image         string
-	Token         string
-	RepoURL       string
-	Labels        []string
-	Env           map[string]string
-	NetworkMode   string
+	Image       string
+	Token       string
+	RepoURL     string // For repo-level: https://github.com/owner/repo
+	OrgName     string // For org-level: just the org name
+	Scope       string // "org" or "repo"
+	Labels      []string
+	Env         map[string]string
+	NetworkMode string
 }
 
 type Runner struct {
 	ID          string
 	ContainerID string
 	Status      string
+	Repo        string
 }
 
 func NewClient(host string) (*Client, error) {
@@ -85,18 +89,31 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 
 	env := []string{
 		fmt.Sprintf("ACCESS_TOKEN=%s", cfg.Token),
-		fmt.Sprintf("REPO_URL=%s", cfg.RepoURL),
 		fmt.Sprintf("RUNNER_NAME=%s", containerName),
 		fmt.Sprintf("LABELS=%s", strings.Join(cfg.Labels, ",")),
-		"RUNNER_SCOPE=repo",
 		"EPHEMERAL=true",
 		"DISABLE_AUTO_UPDATE=true",
 		"RUNNER_WORKDIR=/tmp/runner/work",
 	}
 
+	// Set scope-specific environment variables
+	if cfg.Scope == "org" && cfg.OrgName != "" {
+		env = append(env, fmt.Sprintf("ORG_NAME=%s", cfg.OrgName))
+		env = append(env, "RUNNER_SCOPE=org")
+	} else {
+		env = append(env, fmt.Sprintf("REPO_URL=%s", cfg.RepoURL))
+		env = append(env, "RUNNER_SCOPE=repo")
+	}
+
 	// Add custom env vars
 	for k, v := range cfg.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// Determine repo label
+	repoLabel := cfg.RepoURL
+	if cfg.Scope == "org" {
+		repoLabel = cfg.OrgName // For org scope, store org name
 	}
 
 	containerConfig := &container.Config{
@@ -105,6 +122,7 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		Labels: map[string]string{
 			LabelManagedBy: ManagedByValue,
 			LabelRunnerID:  runnerID,
+			LabelRepo:      repoLabel,
 		},
 	}
 
@@ -161,6 +179,7 @@ func (c *Client) ListRunners(ctx context.Context) ([]Runner, error) {
 			ID:          c.Labels[LabelRunnerID],
 			ContainerID: c.ID,
 			Status:      c.State,
+			Repo:        c.Labels[LabelRepo],
 		})
 	}
 

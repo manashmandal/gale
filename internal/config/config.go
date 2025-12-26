@@ -19,7 +19,8 @@ type Config struct {
 type GitHubConfig struct {
 	Token string `yaml:"token"`
 	Owner string `yaml:"owner"`
-	Repo  string `yaml:"repo"`
+	Repo  string `yaml:"repo"`  // Optional: if empty, monitors all repos
+	Scope string `yaml:"scope"` // "org" or "repo" (default: org if repo is empty)
 }
 
 type DockerConfig struct {
@@ -78,4 +79,16 @@ func (c *Config) setDefaults() {
 	if c.LogLevel == "" {
 		c.LogLevel = "info"
 	}
+	// Default to org scope if no specific repo is set
+	if c.GitHub.Scope == "" {
+		if c.GitHub.Repo == "" {
+			c.GitHub.Scope = "org"
+		} else {
+			c.GitHub.Scope = "repo"
+		}
+	}
+}
+
+func (c *Config) IsOrgScope() bool {
+	return c.GitHub.Scope == "org"
 }
