@@ -181,9 +181,9 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 
 	funnelURL := fmt.Sprintf("https://%s/webhook", dnsName)
 
-	// Get funnel listener - Tailscale handles TLS termination at their edge
-	// so we serve plain HTTP on this listener
-	ln, err := srv.ListenFunnel("tcp", ":443")
+	// Get funnel listener with FunnelOnly() - accepts only public internet traffic
+	// Tailscale handles TLS termination at their edge, so we serve plain HTTP
+	ln, err := srv.ListenFunnel("tcp", ":443", tsnet.FunnelOnly())
 	if err != nil {
 		return fmt.Errorf("creating funnel listener: %w", err)
 	}
