@@ -23,7 +23,7 @@ func TestNew(t *testing.T) {
 		{
 			name:     "empty pid file uses default",
 			pidFile:  "",
-			expected: DefaultPidFile,
+			expected: DefaultPidFile(),
 		},
 	}
 
@@ -258,7 +258,16 @@ func TestStart_Success(t *testing.T) {
 }
 
 func TestDefaultPidFile(t *testing.T) {
-	if DefaultPidFile != "/tmp/gale.pid" {
-		t.Errorf("DefaultPidFile = %q, want %q", DefaultPidFile, "/tmp/gale.pid")
+	pidFile := DefaultPidFile()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		if pidFile != "/tmp/gale.pid" {
+			t.Errorf("DefaultPidFile() = %q, want %q when no home dir", pidFile, "/tmp/gale.pid")
+		}
+		return
+	}
+	expected := filepath.Join(homeDir, ".gale", "gale.pid")
+	if pidFile != expected {
+		t.Errorf("DefaultPidFile() = %q, want %q", pidFile, expected)
 	}
 }

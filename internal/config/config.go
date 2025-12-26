@@ -90,7 +90,7 @@ func (c *Config) Save(path string) error {
 # Documentation: https://github.com/manashmandal/gale
 
 `
-	if err := os.WriteFile(path, []byte(header+string(data)), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(header+string(data)), 0600); err != nil {
 		return fmt.Errorf("writing config file: %w", err)
 	}
 	return nil

@@ -10,9 +10,13 @@ import (
 	"syscall"
 )
 
-const (
-	DefaultPidFile = "/tmp/gale.pid"
-)
+func DefaultPidFile() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "/tmp/gale.pid"
+	}
+	return filepath.Join(homeDir, ".gale", "gale.pid")
+}
 
 type Daemon struct {
 	pidFile string
@@ -21,7 +25,7 @@ type Daemon struct {
 
 func New(pidFile string) *Daemon {
 	if pidFile == "" {
-		pidFile = DefaultPidFile
+		pidFile = DefaultPidFile()
 	}
 	return &Daemon{pidFile: pidFile}
 }
@@ -126,10 +130,18 @@ func (d *Daemon) GetPID() (int, error) {
 
 func (d *Daemon) writePID() error {
 	dir := filepath.Dir(d.pidFile)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(d.pidFile, []byte(strconv.Itoa(os.Getpid())), 0644)
+	// Use O_EXCL to prevent symlink attacks - fail if file exists
+	_ = os.Remove(d.pidFile)
+	f, err := os.OpenFile(d.pidFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(strconv.Itoa(os.Getpid()))
+	return err
 }
 
 func (d *Daemon) cleanup() {

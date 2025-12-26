@@ -198,6 +198,46 @@ See [CLI Reference](docs/cli-reference.md) for all commands.
 
 ---
 
+## Security Considerations
+
+### Docker Socket Access
+
+Gale mounts the Docker socket (`/var/run/docker.sock`) into runner containers to support Docker-in-Docker workflows. **This grants containers effective root access to the host system.**
+
+**Risks:**
+- Code running in workflows can escape the container
+- Malicious workflows could access host filesystem or spawn privileged containers
+
+**Mitigations:**
+- Only run Gale on dedicated runner hosts, not on production machines
+- Use private repositories or trusted contributors only
+- Consider using a Docker socket proxy (e.g., [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)) to restrict API access
+- Enable webhook signature verification in production
+
+### Webhook Security
+
+Always configure a webhook secret in production:
+
+```yaml
+webhook:
+  secret: "your-secure-random-secret"
+```
+
+Or use the `--require-signature` flag:
+```bash
+gale webhook --require-signature
+```
+
+Without signature verification, anyone can send forged webhook events to trigger runner creation.
+
+### Token Security
+
+- Use environment variables for tokens: `token: ${GITHUB_TOKEN}`
+- Consider using GitHub App authentication instead of PATs for auto-rotating tokens
+- Never commit tokens to version control
+
+---
+
 ## License
 
 MIT License

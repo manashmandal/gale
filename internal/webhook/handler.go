@@ -113,8 +113,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read body
-	body, err := io.ReadAll(r.Body)
+	// Read body with size limit (1MB max)
+	const maxBodySize = 1 << 20 // 1MB
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
 	if err != nil {
 		h.logger.Error("failed to read body", "error", err)
 		http.Error(w, "Failed to read body", http.StatusBadRequest)

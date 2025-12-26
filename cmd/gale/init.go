@@ -102,7 +102,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	if strings.Contains(tokenStorage, "Environment") {
 		cfg.GitHub.Token = "${GITHUB_TOKEN}"
-		fmt.Printf("\n💡 Set the environment variable: export GITHUB_TOKEN=%s\n", token)
+		fmt.Printf("\n💡 Set the environment variable: export GITHUB_TOKEN=<your-token>\n")
 	} else {
 		cfg.GitHub.Token = token
 	}
@@ -202,7 +202,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 # Documentation: https://github.com/manashmandal/gale
 
 `
-	if err := os.WriteFile(cfgFile, []byte(header+string(data)), 0644); err != nil {
+	if err := os.WriteFile(cfgFile, []byte(header+string(data)), 0600); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
@@ -210,7 +210,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Println("Next steps:")
 	if strings.Contains(tokenStorage, "Environment") {
-		fmt.Printf("  1. Export token: export GITHUB_TOKEN=%s\n", token)
+		fmt.Println("  1. Export token: export GITHUB_TOKEN=<your-token>")
 		fmt.Println("  2. Start gale:   gale start")
 	} else {
 		fmt.Println("  1. Start gale:   gale start")

@@ -62,6 +62,7 @@ var (
 	useFunnel         bool
 	funnelHostname    string
 	webhookDaemonMode bool
+	requireSignature  bool
 )
 
 func init() {
@@ -69,6 +70,7 @@ func init() {
 	webhookCmd.Flags().BoolVar(&useFunnel, "funnel", false, "use Tailscale Funnel for public HTTPS endpoint")
 	webhookCmd.Flags().StringVar(&funnelHostname, "hostname", "", "Tailscale hostname (default: gale-<machine-hostname>)")
 	webhookCmd.Flags().BoolVarP(&webhookDaemonMode, "daemon", "d", false, "run in background (daemon mode)")
+	webhookCmd.Flags().BoolVar(&requireSignature, "require-signature", false, "require webhook signature verification (recommended for production)")
 	rootCmd.AddCommand(webhookCmd)
 }
 
@@ -146,6 +148,11 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 		cfg.Webhook.Port = webhookPort
 	}
 
+	// Check signature requirement
+	if requireSignature && cfg.GetWebhookSecret() == "" {
+		return fmt.Errorf("--require-signature is set but no webhook secret is configured; set webhook.secret in config or github.app.webhook_secret for GitHub App mode")
+	}
+
 	// Set default funnel hostname if not provided
 	if funnelHostname == "" {
 		funnelHostname = getDefaultFunnelHostname()
@@ -182,8 +189,11 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 
 func runLocalServer(ctx context.Context, cancel context.CancelFunc, sigCh chan os.Signal, mux *http.ServeMux, logger interface{ Info(string, ...any) }, cfg *config.Config) error {
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Webhook.Port),
-		Handler: mux,
+		Addr:         fmt.Sprintf(":%d", cfg.Webhook.Port),
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	go func() {
@@ -203,7 +213,8 @@ func runLocalServer(ctx context.Context, cancel context.CancelFunc, sigCh chan o
 	if cfg.GetWebhookSecret() != "" {
 		logger.Info("webhook signature verification enabled")
 	} else {
-		logger.Info("webhook signature verification disabled (no secret configured)", "warning", true)
+		logger.Info("⚠️  SECURITY WARNING: webhook signature verification disabled")
+		logger.Info("⚠️  Anyone can send forged webhook events. Configure webhook.secret for production use.")
 	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -259,7 +270,10 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 	defer ln.Close()
 
 	server := &http.Server{
-		Handler: mux,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	go func() {
@@ -291,7 +305,8 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 	if cfg.GetWebhookSecret() != "" {
 		logger.Info("webhook signature verification enabled")
 	} else {
-		logger.Info("webhook signature verification disabled (no secret configured)", "warning", true)
+		logger.Info("⚠️  SECURITY WARNING: webhook signature verification disabled")
+		logger.Info("⚠️  Anyone can send forged webhook events. Configure webhook.secret for production use.")
 	}
 
 	// Serve plain HTTP - TLS is terminated by Tailscale Funnel

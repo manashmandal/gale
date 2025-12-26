@@ -22,6 +22,7 @@ go.work
 *.swo
 
 # Config with secrets
+config.yaml
 config.local.yaml
 .env
 .kamal/secrets.local
