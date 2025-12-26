@@ -1,0 +1,55 @@
+name: Test Parallel Runners
+
+on:
+  workflow_dispatch:
+
+jobs:
+  job-1:
+    runs-on: self-hosted
+    steps:
+      - name: Job 1
+        run: |
+          echo "Job 1 started at $(date)"
+          echo "Runner: $RUNNER_NAME"
+          sleep 10
+          echo "Job 1 completed at $(date)"
+
+  job-2:
+    runs-on: self-hosted
+    steps:
+      - name: Job 2
+        run: |
+          echo "Job 2 started at $(date)"
+          echo "Runner: $RUNNER_NAME"
+          sleep 10
+          echo "Job 2 completed at $(date)"
+
+  job-3:
+    runs-on: self-hosted
+    steps:
+      - name: Job 3
+        run: |
+          echo "Job 3 started at $(date)"
+          echo "Runner: $RUNNER_NAME"
+          sleep 10
+          echo "Job 3 completed at $(date)"
+
+  job-4:
+    runs-on: self-hosted
+    steps:
+      - name: Job 4
+        run: |
+          echo "Job 4 started at $(date)"
+          echo "Runner: $RUNNER_NAME"
+          sleep 10
+          echo "Job 4 completed at $(date)"
+
+  job-5:
+    runs-on: self-hosted
+    steps:
+      - name: Job 5
+        run: |
+          echo "Job 5 started at $(date)"
+          echo "Runner: $RUNNER_NAME"
+          sleep 10
+          echo "Job 5 completed at $(date)"
