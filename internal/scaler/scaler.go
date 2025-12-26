@@ -146,6 +146,22 @@ func (s *Scaler) reconcile(ctx context.Context) {
 		s.logger.Info("cleaned up exited runners", "count", cleaned)
 	}
 
+	// Kill runners that have exceeded the timeout
+	if s.cfg.Runner.Timeout > 0 {
+		killed, err := s.docker.KillTimedOutRunners(ctx, s.cfg.Runner.Timeout)
+		if err != nil {
+			s.logger.Warn("failed to kill timed out runners", "error", err)
+		} else if len(killed) > 0 {
+			for _, r := range killed {
+				s.logger.Warn("killed timed out runner",
+					"runner_id", r.ID,
+					"container_id", r.ContainerID[:12],
+					"running_for", s.cfg.Runner.Timeout,
+				)
+			}
+		}
+	}
+
 	// Get current state
 	queuedJobs, err := s.gh.GetQueuedJobs(ctx)
 	if err != nil {

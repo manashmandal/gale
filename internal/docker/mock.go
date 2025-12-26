@@ -3,18 +3,20 @@ package docker
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type MockClient struct {
 	mu sync.Mutex
 
-	EnsureImageFunc          func(ctx context.Context, imageName string) error
-	CreateRunnerFunc         func(ctx context.Context, cfg RunnerConfig) (*Runner, error)
-	ListRunnersFunc          func(ctx context.Context) ([]Runner, error)
-	GetActiveRunnerCountFunc func(ctx context.Context) (int, error)
-	RemoveRunnerFunc         func(ctx context.Context, containerID string) error
-	CleanupExitedRunnersFunc func(ctx context.Context) (int, error)
-	CloseFunc                func() error
+	EnsureImageFunc           func(ctx context.Context, imageName string) error
+	CreateRunnerFunc          func(ctx context.Context, cfg RunnerConfig) (*Runner, error)
+	ListRunnersFunc           func(ctx context.Context) ([]Runner, error)
+	GetActiveRunnerCountFunc  func(ctx context.Context) (int, error)
+	RemoveRunnerFunc          func(ctx context.Context, containerID string) error
+	CleanupExitedRunnersFunc  func(ctx context.Context) (int, error)
+	KillTimedOutRunnersFunc   func(ctx context.Context, timeout time.Duration) ([]Runner, error)
+	CloseFunc                 func() error
 
 	EnsureImageCalls          []string
 	CreateRunnerCalls         []RunnerConfig
@@ -22,6 +24,7 @@ type MockClient struct {
 	GetActiveRunnerCountCalls int
 	RemoveRunnerCalls         []string
 	CleanupExitedRunnersCalls int
+	KillTimedOutRunnersCalls  int
 	CloseCalls                int
 
 	runners []Runner
@@ -98,6 +101,26 @@ func NewMockClient() *MockClient {
 		return cleaned, nil
 	}
 
+	m.KillTimedOutRunnersFunc = func(ctx context.Context, timeout time.Duration) ([]Runner, error) {
+		if timeout <= 0 {
+			return nil, nil
+		}
+		m.mu.Lock()
+		var killed []Runner
+		cutoff := time.Now().Add(-timeout)
+		remaining := []Runner{}
+		for _, r := range m.runners {
+			if r.Status == "running" && r.StartedAt.Before(cutoff) {
+				killed = append(killed, r)
+			} else {
+				remaining = append(remaining, r)
+			}
+		}
+		m.runners = remaining
+		m.mu.Unlock()
+		return killed, nil
+	}
+
 	m.CloseFunc = func() error {
 		return nil
 	}
@@ -154,6 +177,13 @@ func (m *MockClient) CleanupExitedRunners(ctx context.Context) (int, error) {
 	return m.CleanupExitedRunnersFunc(ctx)
 }
 
+func (m *MockClient) KillTimedOutRunners(ctx context.Context, timeout time.Duration) ([]Runner, error) {
+	m.mu.Lock()
+	m.KillTimedOutRunnersCalls++
+	m.mu.Unlock()
+	return m.KillTimedOutRunnersFunc(ctx, timeout)
+}
+
 func (m *MockClient) SetRunners(runners []Runner) {
 	m.mu.Lock()
 	m.runners = runners
@@ -176,6 +206,7 @@ func (m *MockClient) Reset() {
 	m.GetActiveRunnerCountCalls = 0
 	m.RemoveRunnerCalls = nil
 	m.CleanupExitedRunnersCalls = 0
+	m.KillTimedOutRunnersCalls = 0
 	m.CloseCalls = 0
 	m.runners = []Runner{}
 	m.mu.Unlock()

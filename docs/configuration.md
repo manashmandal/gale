@@ -50,6 +50,7 @@ runner:
     - docker
   env: {}                     # Additional environment variables
   network_mode: ""            # Docker network mode (e.g., "host", "bridge")
+  timeout: 30m                # Max runner lifetime (0 = no timeout)
 
 webhook:
   port: 8080                  # Webhook server port
@@ -113,3 +114,32 @@ Benefits of warm pool:
 - Eliminates cold start time for jobs
 - Runners are immediately available
 - Trade-off: consumes resources even when idle
+
+## Runner Timeout
+
+The `runner.timeout` setting automatically kills runners that have been running too long:
+
+```yaml
+runner:
+  timeout: 30m    # Kill runners after 30 minutes
+```
+
+This prevents stuck or zombie runners from consuming resources indefinitely. When a runner exceeds the timeout:
+
+1. Gale gracefully stops the container (10s grace period)
+2. If stop fails, the container is force-removed
+3. A warning is logged with the runner details
+
+**Recommended values:**
+- `30m` - Suitable for most CI/CD jobs
+- `1h` - For longer-running builds or tests
+- `0` - Disable timeout (not recommended)
+
+**Note:** This is a safety mechanism. For workflow-level timeouts, use `timeout-minutes` in your GitHub Actions workflow:
+
+```yaml
+jobs:
+  build:
+    runs-on: gale
+    timeout-minutes: 15    # GitHub cancels job after 15 minutes
+```

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -41,6 +42,7 @@ type Runner struct {
 	ContainerID string
 	Status      string
 	Repo        string
+	StartedAt   time.Time
 }
 
 func NewClient(host string) (*Client, error) {
@@ -158,6 +160,7 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		ID:          runnerID,
 		ContainerID: resp.ID,
 		Status:      "running",
+		StartedAt:   time.Now(),
 	}, nil
 }
 
@@ -174,12 +177,13 @@ func (c *Client) ListRunners(ctx context.Context) ([]Runner, error) {
 	}
 
 	runners := make([]Runner, 0, len(containers))
-	for _, c := range containers {
+	for _, cont := range containers {
 		runners = append(runners, Runner{
-			ID:          c.Labels[LabelRunnerID],
-			ContainerID: c.ID,
-			Status:      c.State,
-			Repo:        c.Labels[LabelRepo],
+			ID:          cont.Labels[LabelRunnerID],
+			ContainerID: cont.ID,
+			Status:      cont.State,
+			Repo:        cont.Labels[LabelRepo],
+			StartedAt:   time.Unix(cont.Created, 0),
 		})
 	}
 
@@ -222,4 +226,31 @@ func (c *Client) CleanupExitedRunners(ctx context.Context) (int, error) {
 		}
 	}
 	return cleaned, nil
+}
+
+// KillTimedOutRunners kills running containers that have exceeded the timeout
+func (c *Client) KillTimedOutRunners(ctx context.Context, timeout time.Duration) ([]Runner, error) {
+	if timeout <= 0 {
+		return nil, nil
+	}
+
+	runners, err := c.ListRunners(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var killed []Runner
+	cutoff := time.Now().Add(-timeout)
+	for _, r := range runners {
+		if r.Status == "running" && r.StartedAt.Before(cutoff) {
+			// Stop the container gracefully first, then remove
+			stopTimeout := 10 // seconds
+			if err := c.docker.ContainerStop(ctx, r.ContainerID, container.StopOptions{Timeout: &stopTimeout}); err != nil {
+				// Try force remove if stop fails
+				_ = c.docker.ContainerRemove(ctx, r.ContainerID, container.RemoveOptions{Force: true})
+			}
+			killed = append(killed, r)
+		}
+	}
+	return killed, nil
 }

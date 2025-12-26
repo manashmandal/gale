@@ -58,6 +58,7 @@ type RunnerConfig struct {
 	Labels      []string          `yaml:"labels"`
 	Env         map[string]string `yaml:"env"`
 	NetworkMode string            `yaml:"network_mode"`
+	Timeout     time.Duration     `yaml:"timeout"` // Max runner lifetime (default: 0 = no timeout)
 }
 
 func Load(path string) (*Config, error) {
