@@ -144,6 +144,16 @@ gale config set github.scope org
 gale config set log_level debug
 ```
 
+### `gale pool` - Warm Pool Management
+
+```bash
+gale pool                    # Show current warm pool size
+gale pool 3                  # Keep 3 runners always running
+gale pool 0                  # Scale to zero when idle (default)
+```
+
+A warm pool keeps runners pre-started and ready to pick up jobs immediately, eliminating cold start time. Set to 0 (default) to scale to zero when there are no queued jobs.
+
 ### `gale version` - Show Version
 
 ```bash

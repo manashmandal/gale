@@ -101,6 +101,8 @@ func (s *Scaler) reconcile(ctx context.Context) {
 	queuedJobs, err := s.gh.GetQueuedJobs(ctx)
 	if err != nil {
 		s.logger.Error("failed to get queued jobs", "error", err)
+		// Still maintain minimum runners even if we can't fetch jobs
+		s.ensureMinRunners(ctx)
 		return
 	}
 
@@ -115,6 +117,7 @@ func (s *Scaler) reconcile(ctx context.Context) {
 	s.logger.Debug("reconcile state",
 		"queued_jobs", demand,
 		"active_runners", activeRunners,
+		"min_runners", s.cfg.Scaler.MinRunners,
 	)
 
 	if demand > 0 {
@@ -129,6 +132,7 @@ func (s *Scaler) reconcile(ctx context.Context) {
 	}
 
 	// Calculate desired runner count
+	// At minimum, maintain min_runners (warm pool)
 	desired := demand
 	if desired < s.cfg.Scaler.MinRunners {
 		desired = s.cfg.Scaler.MinRunners
@@ -137,9 +141,35 @@ func (s *Scaler) reconcile(ctx context.Context) {
 		desired = s.cfg.Scaler.MaxRunners
 	}
 
-	// Scale up if needed
+	// Scale up if needed (either for jobs or to maintain minimum)
 	if desired > activeRunners {
-		s.scaleUp(ctx, desired-activeRunners, queuedJobs)
+		toCreate := desired - activeRunners
+		if demand > 0 {
+			s.scaleUp(ctx, toCreate, queuedJobs)
+		} else {
+			// Creating warm pool runners (no specific jobs)
+			s.logger.Info("maintaining warm pool", "current", activeRunners, "target", desired)
+			s.scaleUp(ctx, toCreate, nil)
+		}
+	}
+}
+
+// ensureMinRunners maintains the minimum runner count even when job fetching fails
+func (s *Scaler) ensureMinRunners(ctx context.Context) {
+	if s.cfg.Scaler.MinRunners == 0 {
+		return
+	}
+
+	activeRunners, err := s.docker.GetActiveRunnerCount(ctx)
+	if err != nil {
+		s.logger.Error("failed to get active runners", "error", err)
+		return
+	}
+
+	if activeRunners < s.cfg.Scaler.MinRunners {
+		toCreate := s.cfg.Scaler.MinRunners - activeRunners
+		s.logger.Info("maintaining minimum runners", "current", activeRunners, "min", s.cfg.Scaler.MinRunners)
+		s.scaleUp(ctx, toCreate, nil)
 	}
 }
 
@@ -164,10 +194,16 @@ func (s *Scaler) scaleUp(ctx context.Context, count int, jobs []github.QueuedJob
 
 		// Determine which repo this runner is for
 		var targetRepo string
-		if i < len(jobs) {
+		if jobs != nil && i < len(jobs) {
 			targetRepo = jobs[i].Repo
-		} else if len(jobs) > 0 {
+		} else if jobs != nil && len(jobs) > 0 {
 			targetRepo = jobs[0].Repo
+		} else if s.cfg.GitHub.Repo != "" {
+			// Warm pool runner for specific repo
+			targetRepo = fmt.Sprintf("%s/%s", s.cfg.GitHub.Owner, s.cfg.GitHub.Repo)
+		} else {
+			// Warm pool runner for org (will use org-level registration)
+			targetRepo = s.cfg.GitHub.Owner
 		}
 
 		go func(repo string) {
@@ -190,10 +226,15 @@ func (s *Scaler) scaleUp(ctx context.Context, count int, jobs []github.QueuedJob
 
 			runner, err := s.docker.CreateRunner(ctx, cfg)
 			if err != nil {
-				s.logger.Error("failed to create runner", "error", err, "repo", repo)
+				s.logger.Error("failed to create runner", "error", err, "target", repo)
 				return
 			}
-			s.logger.Info("created runner",
+
+			logMsg := "created runner"
+			if jobs == nil {
+				logMsg = "created warm pool runner"
+			}
+			s.logger.Info(logMsg,
 				"runner_id", runner.ID,
 				"container_id", runner.ContainerID[:12],
 				"target", repo,
