@@ -24,8 +24,14 @@ jobs:
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.out ./...
 
-      - name: Show coverage
-        run: go tool cover -func=coverage.out | grep total
+      - name: Check coverage
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: ${COVERAGE}%"
+          if [ "$(echo "$COVERAGE < 70" | bc)" -eq 1 ]; then
+            echo "Coverage ${COVERAGE}% is below minimum 70%"
+            exit 1
+          fi
 
   lint:
     runs-on: gale
