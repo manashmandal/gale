@@ -322,6 +322,131 @@ func TestSave(t *testing.T) {
 	}
 }
 
+func TestIsOrgScope(t *testing.T) {
+	tests := []struct {
+		name     string
+		scope    string
+		expected bool
+	}{
+		{"org scope", "org", true},
+		{"repo scope", "repo", false},
+		{"repos scope", "repos", false},
+		{"empty scope", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				GitHub: GitHubConfig{
+					Scope: tt.scope,
+				},
+			}
+			if got := cfg.IsOrgScope(); got != tt.expected {
+				t.Errorf("IsOrgScope() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetRepos(t *testing.T) {
+	tests := []struct {
+		name     string
+		repos    []string
+		repo     string
+		expected []string
+	}{
+		{
+			name:     "repos list",
+			repos:    []string{"repo1", "repo2"},
+			expected: []string{"repo1", "repo2"},
+		},
+		{
+			name:     "empty repos list",
+			repos:    []string{},
+			expected: []string{},
+		},
+		{
+			name:     "nil repos list",
+			repos:    nil,
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				GitHub: GitHubConfig{
+					Repos: tt.repos,
+					Repo:  tt.repo,
+				},
+			}
+			got := cfg.GetRepos()
+			if len(got) != len(tt.expected) {
+				t.Errorf("GetRepos() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetWebhookSecret(t *testing.T) {
+	tests := []struct {
+		name      string
+		secret    string
+		appSecret string
+		expected  string
+	}{
+		{
+			name:     "webhook secret",
+			secret:   "webhook-secret",
+			expected: "webhook-secret",
+		},
+		{
+			name:      "app webhook secret",
+			appSecret: "app-secret",
+			expected:  "app-secret",
+		},
+		{
+			name:     "no secret",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Webhook: WebhookConfig{
+					Secret: tt.secret,
+				},
+				GitHub: GitHubConfig{
+					App: GitHubAppConfig{
+						WebhookSecret: tt.appSecret,
+					},
+				},
+			}
+			if got := cfg.GetWebhookSecret(); got != tt.expected {
+				t.Errorf("GetWebhookSecret() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+
+	// Test env var expansion in app secret
+	t.Run("app secret with env expansion", func(t *testing.T) {
+		os.Setenv("TEST_WEBHOOK_SECRET", "expanded-secret")
+		defer os.Unsetenv("TEST_WEBHOOK_SECRET")
+
+		cfg := &Config{
+			GitHub: GitHubConfig{
+				App: GitHubAppConfig{
+					WebhookSecret: "${TEST_WEBHOOK_SECRET}",
+				},
+			},
+		}
+		if got := cfg.GetWebhookSecret(); got != "expanded-secret" {
+			t.Errorf("GetWebhookSecret() = %q, want expanded-secret", got)
+		}
+	})
+}
+
 func TestGetPrivateKey(t *testing.T) {
 	t.Run("from inline", func(t *testing.T) {
 		cfg := &Config{

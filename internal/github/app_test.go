@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"os"
 	"testing"
 	"time"
 
@@ -197,5 +198,102 @@ func TestNewAppClientFromEnv_NotSet(t *testing.T) {
 	_, err := NewAppClientFromEnv(12345, "NONEXISTENT_ENV_VAR_FOR_TEST")
 	if err == nil {
 		t.Error("NewAppClientFromEnv() with unset env var should return error")
+	}
+}
+
+func TestNewAppClientFromFile(t *testing.T) {
+	keyPEM := generateTestKey(t)
+
+	// Create temp file
+	tmpFile, err := os.CreateTemp("", "test-key-*.pem")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(keyPEM); err != nil {
+		t.Fatalf("failed to write key: %v", err)
+	}
+	tmpFile.Close()
+
+	client, err := NewAppClientFromFile(12345, tmpFile.Name())
+	if err != nil {
+		t.Fatalf("NewAppClientFromFile() error = %v", err)
+	}
+
+	if client.appID != 12345 {
+		t.Errorf("appID = %d, want 12345", client.appID)
+	}
+}
+
+func TestNewAppClientFromFile_NotFound(t *testing.T) {
+	_, err := NewAppClientFromFile(12345, "/nonexistent/path/to/key.pem")
+	if err == nil {
+		t.Error("NewAppClientFromFile() with nonexistent file should return error")
+	}
+}
+
+func TestNewAppClientFromEnv_Valid(t *testing.T) {
+	keyPEM := generateTestKey(t)
+
+	// Set env var
+	envVar := "TEST_GITHUB_APP_KEY"
+	os.Setenv(envVar, string(keyPEM))
+	defer os.Unsetenv(envVar)
+
+	client, err := NewAppClientFromEnv(12345, envVar)
+	if err != nil {
+		t.Fatalf("NewAppClientFromEnv() error = %v", err)
+	}
+
+	if client.appID != 12345 {
+		t.Errorf("appID = %d, want 12345", client.appID)
+	}
+}
+
+func TestInstallationTokenStruct(t *testing.T) {
+	token := &InstallationToken{
+		Token:     "test-token",
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	}
+
+	if token.Token != "test-token" {
+		t.Errorf("Token = %q, want test-token", token.Token)
+	}
+
+	if token.ExpiresAt.Before(time.Now()) {
+		t.Error("ExpiresAt should be in the future")
+	}
+}
+
+func TestAppClient_ConcurrentCacheAccess(t *testing.T) {
+	keyPEM := generateTestKey(t)
+
+	client, err := NewAppClient(12345, keyPEM)
+	if err != nil {
+		t.Fatalf("NewAppClient() error = %v", err)
+	}
+
+	// Test concurrent access to cache
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(id int64) {
+			client.cacheMu.Lock()
+			client.tokenCache[id] = &InstallationToken{
+				Token:     "test-token",
+				ExpiresAt: time.Now().Add(1 * time.Hour),
+			}
+			client.cacheMu.Unlock()
+			done <- true
+		}(int64(i))
+	}
+
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	count := client.GetCachedTokenCount()
+	if count != 10 {
+		t.Errorf("GetCachedTokenCount() = %d, want 10", count)
 	}
 }

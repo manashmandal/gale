@@ -14,8 +14,8 @@ import (
 
 type Scaler struct {
 	cfg    *config.Config
-	gh     *github.Client
-	docker *docker.Client
+	gh     github.GitHubClient
+	docker docker.DockerClient
 	logger *slog.Logger
 
 	mu            sync.Mutex
@@ -35,7 +35,9 @@ type Stats struct {
 }
 
 type Options struct {
-	Force bool // Ignore rate limit threshold
+	Force        bool
+	GitHubClient github.GitHubClient
+	DockerClient docker.DockerClient
 }
 
 func New(cfg *config.Config, logger *slog.Logger) (*Scaler, error) {
@@ -43,26 +45,41 @@ func New(cfg *config.Config, logger *slog.Logger) (*Scaler, error) {
 }
 
 func NewWithOptions(cfg *config.Config, logger *slog.Logger, opts Options) (*Scaler, error) {
-	// For multi-repo mode, use first repo or empty for org-level
-	repo := cfg.GitHub.Repo
-	if repo == "" && len(cfg.GitHub.Repos) > 0 {
-		repo = cfg.GitHub.Repos[0]
+	var gh github.GitHubClient
+	var dockerClient docker.DockerClient
+	var err error
+
+	if opts.GitHubClient != nil {
+		gh = opts.GitHubClient
+	} else {
+		repo := cfg.GitHub.Repo
+		if repo == "" && len(cfg.GitHub.Repos) > 0 {
+			repo = cfg.GitHub.Repos[0]
+		}
+
+		gh = github.NewClientWithOptions(github.ClientOptions{
+			Token:     cfg.GitHub.Token,
+			Owner:     cfg.GitHub.Owner,
+			Repo:      repo,
+			Scope:     cfg.GitHub.Scope,
+			Threshold: cfg.Scaler.RateLimitThreshold,
+			Force:     opts.Force,
+		})
 	}
 
-	gh := github.NewClientWithOptions(github.ClientOptions{
-		Token:     cfg.GitHub.Token,
-		Owner:     cfg.GitHub.Owner,
-		Repo:      repo,
-		Scope:     cfg.GitHub.Scope,
-		Threshold: cfg.Scaler.RateLimitThreshold,
-		Force:     opts.Force,
-	})
-
-	dockerClient, err := docker.NewClient(cfg.Docker.Host)
-	if err != nil {
-		return nil, fmt.Errorf("creating docker client: %w", err)
+	if opts.DockerClient != nil {
+		dockerClient = opts.DockerClient
+	} else {
+		dockerClient, err = docker.NewClient(cfg.Docker.Host)
+		if err != nil {
+			return nil, fmt.Errorf("creating docker client: %w", err)
+		}
 	}
 
+	return NewWithClients(cfg, logger, gh, dockerClient, opts)
+}
+
+func NewWithClients(cfg *config.Config, logger *slog.Logger, gh github.GitHubClient, dockerClient docker.DockerClient, opts Options) (*Scaler, error) {
 	return &Scaler{
 		cfg:       cfg,
 		gh:        gh,

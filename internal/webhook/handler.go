@@ -41,7 +41,7 @@ type WorkflowJobEvent struct {
 
 type Handler struct {
 	cfg       *config.Config
-	docker    *docker.Client
+	docker    docker.DockerClient
 	appClient *github.AppClient // nil if using PAT mode
 	logger    *slog.Logger
 	secret    string
@@ -50,12 +50,31 @@ type Handler struct {
 	activeRunners map[int64]string // jobID -> containerID
 }
 
+type HandlerOptions struct {
+	DockerClient docker.DockerClient
+}
+
 func NewHandler(cfg *config.Config, logger *slog.Logger) (*Handler, error) {
-	dockerClient, err := docker.NewClient(cfg.Docker.Host)
-	if err != nil {
-		return nil, fmt.Errorf("creating docker client: %w", err)
+	return NewHandlerWithOptions(cfg, logger, HandlerOptions{})
+}
+
+func NewHandlerWithOptions(cfg *config.Config, logger *slog.Logger, opts HandlerOptions) (*Handler, error) {
+	var dockerClient docker.DockerClient
+	var err error
+
+	if opts.DockerClient != nil {
+		dockerClient = opts.DockerClient
+	} else {
+		dockerClient, err = docker.NewClient(cfg.Docker.Host)
+		if err != nil {
+			return nil, fmt.Errorf("creating docker client: %w", err)
+		}
 	}
 
+	return NewHandlerWithDocker(cfg, logger, dockerClient)
+}
+
+func NewHandlerWithDocker(cfg *config.Config, logger *slog.Logger, dockerClient docker.DockerClient) (*Handler, error) {
 	h := &Handler{
 		cfg:           cfg,
 		docker:        dockerClient,

@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/manashmandal/gale/internal/config"
+	"github.com/manashmandal/gale/internal/docker"
 )
 
 func testLogger() *slog.Logger {
@@ -269,6 +271,221 @@ func TestGetActiveRunnerCount(t *testing.T) {
 	}
 }
 
+func TestServeHTTP_InvalidJSON(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.GitHub.Repos = []string{}
+
+	h := &Handler{
+		cfg:           cfg,
+		logger:        testLogger(),
+		activeRunners: make(map[int64]string),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader("invalid json{"))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid JSON status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServeHTTP_CompletedAction_NotTracked(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.GitHub.Repos = []string{}
+
+	h := &Handler{
+		cfg:           cfg,
+		logger:        testLogger(),
+		activeRunners: make(map[int64]string), // No tracked runners
+	}
+
+	event := WorkflowJobEvent{
+		Action: "completed",
+	}
+	event.WorkflowJob.ID = 123
+	event.WorkflowJob.Name = "test-job"
+	event.Repository.FullName = "owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	// Should return OK even when runner is not tracked (no cleanup needed)
+	if w.Code != http.StatusOK {
+		t.Errorf("completed event status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestServeHTTP_QueuedWithoutGaleLabel(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{}, // monitor all repos
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+	}
+
+	h := &Handler{
+		cfg:           cfg,
+		logger:        testLogger(),
+		activeRunners: make(map[int64]string),
+	}
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 456
+	event.WorkflowJob.Name = "test-job"
+	event.WorkflowJob.Labels = []string{"ubuntu-latest"} // No gale label
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	// Should return 200 because job doesn't require gale runner
+	if w.Code != http.StatusOK {
+		t.Errorf("queued without gale label status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestServeHTTP_RepoNotMonitored(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Repos: []string{"other-repo"}, // only monitor other-repo
+		},
+	}
+
+	h := &Handler{
+		cfg:           cfg,
+		logger:        testLogger(),
+		activeRunners: make(map[int64]string),
+	}
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 789
+	event.WorkflowJob.Labels = []string{"gale"}
+	event.Repository.FullName = "owner/repo" // not in monitored list
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("unmonitored repo status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestServeHTTP_MaxRunnersReached(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Repos: []string{}, // monitor all
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 2,
+		},
+	}
+
+	h := &Handler{
+		cfg:    cfg,
+		logger: testLogger(),
+		activeRunners: map[int64]string{
+			1: "container1",
+			2: "container2",
+		},
+	}
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 999
+	event.WorkflowJob.Labels = []string{"gale"}
+	event.Repository.FullName = "owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("max runners reached status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestServeHTTP_ValidSignature(t *testing.T) {
+	secret := "webhook-secret"
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Repos: []string{},
+		},
+	}
+
+	h := &Handler{
+		cfg:           cfg,
+		logger:        testLogger(),
+		secret:        secret,
+		activeRunners: make(map[int64]string),
+	}
+
+	payload := `{"action":"queued","workflow_job":{"id":1,"labels":["ubuntu"]},"repository":{"full_name":"o/r"}}`
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	validSig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	req.Header.Set("X-Hub-Signature-256", validSig)
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("valid signature status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleCompleted_RunnerNotTracked(t *testing.T) {
+	h := &Handler{
+		logger:        testLogger(),
+		activeRunners: make(map[int64]string),
+	}
+
+	event := &WorkflowJobEvent{
+		Action: "completed",
+	}
+	event.WorkflowJob.ID = 999 // not in activeRunners
+
+	// Should not panic
+	h.handleCompleted(nil, event)
+
+	if len(h.activeRunners) != 0 {
+		t.Error("activeRunners should remain empty")
+	}
+}
+
 func TestWorkflowJobEventParsing(t *testing.T) {
 	payload := `{
 		"action": "queued",
@@ -312,5 +529,737 @@ func TestWorkflowJobEventParsing(t *testing.T) {
 	}
 	if event.Installation.ID != 99999 {
 		t.Errorf("Installation.ID = %d, want 99999", event.Installation.ID)
+	}
+}
+
+// Tests with mock docker client
+
+func TestNewHandlerWithDocker(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+	if h == nil {
+		t.Fatal("NewHandlerWithDocker() returned nil")
+	}
+}
+
+func TestServeHTTP_QueuedWithGaleLabel_WithMock(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{}, // monitor all repos
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+		Runner: config.RunnerConfig{
+			Image:  "test-image",
+			Labels: []string{"gale"},
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 456
+	event.WorkflowJob.Name = "test-job"
+	event.WorkflowJob.Labels = []string{"gale", "linux"}
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("queued with gale label status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Verify runner was created
+	if len(mockDocker.CreateRunnerCalls) != 1 {
+		t.Errorf("CreateRunnerCalls = %d, want 1", len(mockDocker.CreateRunnerCalls))
+	}
+
+	// Verify active runner count
+	if h.GetActiveRunnerCount() != 1 {
+		t.Errorf("GetActiveRunnerCount() = %d, want 1", h.GetActiveRunnerCount())
+	}
+}
+
+func TestServeHTTP_CompletedWithRunner_WithMock(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	// Pre-populate active runner
+	h.activeRunners[123] = "container-abc123def456"
+
+	event := WorkflowJobEvent{
+		Action: "completed",
+	}
+	event.WorkflowJob.ID = 123
+	event.WorkflowJob.Name = "test-job"
+	event.Repository.FullName = "owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("completed status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Verify runner was removed
+	if len(mockDocker.RemoveRunnerCalls) != 1 {
+		t.Errorf("RemoveRunnerCalls = %d, want 1", len(mockDocker.RemoveRunnerCalls))
+	}
+
+	// Verify active runner count
+	if h.GetActiveRunnerCount() != 0 {
+		t.Errorf("GetActiveRunnerCount() = %d, want 0", h.GetActiveRunnerCount())
+	}
+}
+
+func TestServeHTTP_MaxRunnersReached_WithMock(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{}, // monitor all
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 2,
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	// Pre-populate at max capacity
+	h.activeRunners[1] = "container1"
+	h.activeRunners[2] = "container2"
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 999
+	event.WorkflowJob.Labels = []string{"gale"}
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("max runners status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Should NOT create new runner
+	if len(mockDocker.CreateRunnerCalls) != 0 {
+		t.Errorf("CreateRunnerCalls = %d, want 0 (at max capacity)", len(mockDocker.CreateRunnerCalls))
+	}
+}
+
+func TestHandlerClose_WithMock(t *testing.T) {
+	cfg := &config.Config{}
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	err = h.Close()
+	if err != nil {
+		t.Errorf("Close() error = %v", err)
+	}
+
+	if mockDocker.CloseCalls != 1 {
+		t.Errorf("CloseCalls = %d, want 1", mockDocker.CloseCalls)
+	}
+}
+
+func TestServeHTTP_InProgressAction(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Repos: []string{},
+		},
+	}
+
+	h := &Handler{
+		cfg:           cfg,
+		logger:        testLogger(),
+		activeRunners: make(map[int64]string),
+	}
+
+	event := WorkflowJobEvent{
+		Action: "in_progress",
+	}
+	event.WorkflowJob.ID = 123
+	event.WorkflowJob.Name = "test-job"
+	event.WorkflowJob.Labels = []string{"gale"}
+	event.Repository.FullName = "owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	// in_progress is not handled, should return OK
+	if w.Code != http.StatusOK {
+		t.Errorf("in_progress event status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestServeHTTP_MonitoredRepo(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{"repo"}, // Only monitor "repo"
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+		Runner: config.RunnerConfig{
+			Image:  "test-image",
+			Labels: []string{"gale"},
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 456
+	event.WorkflowJob.Name = "test-job"
+	event.WorkflowJob.Labels = []string{"gale"}
+	event.Repository.FullName = "owner/repo" // Should match
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("monitored repo status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Should have created a runner
+	if len(mockDocker.CreateRunnerCalls) != 1 {
+		t.Errorf("CreateRunnerCalls = %d, want 1", len(mockDocker.CreateRunnerCalls))
+	}
+}
+
+func TestServeHTTP_CreateRunnerError(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+		Runner: config.RunnerConfig{
+			Image:  "test-image",
+			Labels: []string{"gale"},
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	mockDocker.CreateRunnerFunc = func(ctx context.Context, cfg docker.RunnerConfig) (*docker.Runner, error) {
+		return nil, context.DeadlineExceeded
+	}
+
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 789
+	event.WorkflowJob.Name = "test-job"
+	event.WorkflowJob.Labels = []string{"gale"}
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	// Should still return OK (error is logged but doesn't fail the webhook)
+	if w.Code != http.StatusOK {
+		t.Errorf("create runner error status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Runner should NOT be in activeRunners
+	if h.GetActiveRunnerCount() != 0 {
+		t.Errorf("GetActiveRunnerCount() = %d, want 0", h.GetActiveRunnerCount())
+	}
+}
+
+func TestHandleQueued_SelfHostedLabel(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+		Runner: config.RunnerConfig{
+			Image:  "test-image",
+			Labels: []string{"self-hosted"},
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 321
+	event.WorkflowJob.Name = "test-job"
+	event.WorkflowJob.Labels = []string{"self-hosted", "linux"} // self-hosted label
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("self-hosted label status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Should have created a runner for self-hosted label
+	if len(mockDocker.CreateRunnerCalls) != 1 {
+		t.Errorf("CreateRunnerCalls = %d, want 1", len(mockDocker.CreateRunnerCalls))
+	}
+}
+
+func TestHandler_ConcurrentActiveRunnerAccess(t *testing.T) {
+	h := &Handler{
+		logger:        testLogger(),
+		activeRunners: make(map[int64]string),
+	}
+
+	// Simulate concurrent access
+	done := make(chan bool)
+	go func() {
+		for i := int64(0); i < 100; i++ {
+			h.mu.Lock()
+			h.activeRunners[i] = "container"
+			h.mu.Unlock()
+		}
+		done <- true
+	}()
+
+	go func() {
+		for i := 0; i < 100; i++ {
+			_ = h.GetActiveRunnerCount()
+		}
+		done <- true
+	}()
+
+	<-done
+	<-done
+
+	// Should have 100 runners
+	if h.GetActiveRunnerCount() != 100 {
+		t.Errorf("GetActiveRunnerCount() = %d, want 100", h.GetActiveRunnerCount())
+	}
+}
+
+func TestWorkflowJobEvent_AllFields(t *testing.T) {
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 12345
+	event.WorkflowJob.RunID = 67890
+	event.WorkflowJob.Name = "test-job"
+	event.WorkflowJob.Status = "queued"
+	event.WorkflowJob.Labels = []string{"gale", "linux", "x64"}
+	event.WorkflowJob.RunnerName = "runner-1"
+	event.WorkflowJob.RunnerID = 99
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+	event.Installation.ID = 55555
+
+	if event.Action != "queued" {
+		t.Errorf("Action = %q, want queued", event.Action)
+	}
+	if event.WorkflowJob.ID != 12345 {
+		t.Errorf("WorkflowJob.ID = %d, want 12345", event.WorkflowJob.ID)
+	}
+	if event.WorkflowJob.RunID != 67890 {
+		t.Errorf("WorkflowJob.RunID = %d, want 67890", event.WorkflowJob.RunID)
+	}
+	if event.WorkflowJob.RunnerName != "runner-1" {
+		t.Errorf("WorkflowJob.RunnerName = %q, want runner-1", event.WorkflowJob.RunnerName)
+	}
+	if event.WorkflowJob.RunnerID != 99 {
+		t.Errorf("WorkflowJob.RunnerID = %d, want 99", event.WorkflowJob.RunnerID)
+	}
+	if event.Installation.ID != 55555 {
+		t.Errorf("Installation.ID = %d, want 55555", event.Installation.ID)
+	}
+}
+
+func TestNewHandlerWithOptions(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+
+	h, err := NewHandlerWithOptions(cfg, testLogger(), HandlerOptions{
+		DockerClient: mockDocker,
+	})
+	if err != nil {
+		t.Fatalf("NewHandlerWithOptions() error = %v", err)
+	}
+	if h == nil {
+		t.Fatal("NewHandlerWithOptions() returned nil")
+	}
+
+	// Verify the mock client is used
+	err = h.Close()
+	if err != nil {
+		t.Errorf("Close() error = %v", err)
+	}
+
+	if mockDocker.CloseCalls != 1 {
+		t.Errorf("CloseCalls = %d, want 1", mockDocker.CloseCalls)
+	}
+}
+
+func TestNewHandlerWithOptions_FullWorkflow(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+		Runner: config.RunnerConfig{
+			Image:  "test-image",
+			Labels: []string{"gale"},
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+
+	h, err := NewHandlerWithOptions(cfg, testLogger(), HandlerOptions{
+		DockerClient: mockDocker,
+	})
+	if err != nil {
+		t.Fatalf("NewHandlerWithOptions() error = %v", err)
+	}
+
+	// Test full workflow: queue job -> create runner -> complete job -> remove runner
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 123
+	event.WorkflowJob.Name = "test-job"
+	event.WorkflowJob.Labels = []string{"gale"}
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	// Queue event
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("queued status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Verify runner was created
+	if len(mockDocker.CreateRunnerCalls) != 1 {
+		t.Errorf("CreateRunnerCalls = %d, want 1", len(mockDocker.CreateRunnerCalls))
+	}
+
+	// Complete event
+	event.Action = "completed"
+	body, _ = json.Marshal(event)
+
+	req = httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("completed status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Verify runner was removed
+	if len(mockDocker.RemoveRunnerCalls) != 1 {
+		t.Errorf("RemoveRunnerCalls = %d, want 1", len(mockDocker.RemoveRunnerCalls))
+	}
+}
+
+func TestHandlerOptions_Empty(t *testing.T) {
+	opts := HandlerOptions{}
+
+	if opts.DockerClient != nil {
+		t.Error("Empty HandlerOptions should have nil DockerClient")
+	}
+}
+
+func TestHandlerWithAppMode(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	if h.appClient != nil {
+		t.Error("appClient should be nil when not in app mode")
+	}
+}
+
+func TestHandleQueued_NoInstallationIDInAppMode(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+		Runner: config.RunnerConfig{
+			Image:  "test-image",
+			Labels: []string{"gale"},
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h := &Handler{
+		cfg:           cfg,
+		docker:        mockDocker,
+		logger:        testLogger(),
+		activeRunners: make(map[int64]string),
+	}
+
+	event := &WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 123
+	event.WorkflowJob.Labels = []string{"gale"}
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+	event.Installation.ID = 0
+
+	h.handleQueued(context.Background(), event)
+
+	if len(mockDocker.CreateRunnerCalls) != 1 {
+		t.Errorf("CreateRunnerCalls = %d, want 1", len(mockDocker.CreateRunnerCalls))
+	}
+}
+
+func TestHandleQueued_RunnerConfigValues(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+		Runner: config.RunnerConfig{
+			Image:       "custom-image:latest",
+			Labels:      []string{"gale", "custom"},
+			Env:         map[string]string{"FOO": "bar"},
+			NetworkMode: "bridge",
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 456
+	event.WorkflowJob.Labels = []string{"gale"}
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if len(mockDocker.CreateRunnerCalls) != 1 {
+		t.Fatalf("CreateRunnerCalls = %d, want 1", len(mockDocker.CreateRunnerCalls))
+	}
+
+	runnerCfg := mockDocker.CreateRunnerCalls[0]
+	if runnerCfg.Image != "custom-image:latest" {
+		t.Errorf("Image = %q, want custom-image:latest", runnerCfg.Image)
+	}
+	if runnerCfg.Token != "test-token" {
+		t.Errorf("Token = %q, want test-token", runnerCfg.Token)
+	}
+	if runnerCfg.NetworkMode != "bridge" {
+		t.Errorf("NetworkMode = %q, want bridge", runnerCfg.NetworkMode)
+	}
+	if runnerCfg.Scope != "repo" {
+		t.Errorf("Scope = %q, want repo", runnerCfg.Scope)
+	}
+}
+
+func TestHandleCompleted_ShortContainerID(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Repos: []string{},
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h := &Handler{
+		cfg:    cfg,
+		docker: mockDocker,
+		logger: testLogger(),
+		activeRunners: map[int64]string{
+			123: "abcdefghijklmnop",
+		},
+	}
+
+	event := &WorkflowJobEvent{
+		Action: "completed",
+	}
+	event.WorkflowJob.ID = 123
+	event.Repository.FullName = "owner/repo"
+
+	h.handleCompleted(context.Background(), event)
+
+	if len(mockDocker.RemoveRunnerCalls) != 1 {
+		t.Errorf("RemoveRunnerCalls = %d, want 1", len(mockDocker.RemoveRunnerCalls))
+	}
+	if mockDocker.RemoveRunnerCalls[0] != "abcdefghijklmnop" {
+		t.Errorf("RemoveRunnerCalls[0] = %q, want abcdefghijklmnop", mockDocker.RemoveRunnerCalls[0])
+	}
+}
+
+func TestServeHTTP_NoSecret(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Repos: []string{},
+		},
+	}
+
+	h := &Handler{
+		cfg:           cfg,
+		logger:        testLogger(),
+		secret:        "",
+		activeRunners: make(map[int64]string),
+	}
+
+	payload := `{"action":"queued","workflow_job":{"id":1,"labels":[]},"repository":{"full_name":"o/r"}}`
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("no secret status = %d, want %d", w.Code, http.StatusOK)
 	}
 }
