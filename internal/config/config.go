@@ -13,7 +13,13 @@ type Config struct {
 	Docker   DockerConfig   `yaml:"docker"`
 	Scaler   ScalerConfig   `yaml:"scaler"`
 	Runner   RunnerConfig   `yaml:"runner"`
+	Webhook  WebhookConfig  `yaml:"webhook"`
 	LogLevel string         `yaml:"log_level"`
+}
+
+type WebhookConfig struct {
+	Port   int    `yaml:"port"`   // Port to listen on (default 8080)
+	Secret string `yaml:"secret"` // Webhook secret for signature verification
 }
 
 type GitHubConfig struct {
@@ -73,6 +79,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Scaler.RateLimitThreshold == 0 {
 		c.Scaler.RateLimitThreshold = 2500 // Default: stop at 2500 of 5000 calls
+	}
+	if c.Webhook.Port == 0 {
+		c.Webhook.Port = 8080
 	}
 	if c.Runner.Image == "" {
 		c.Runner.Image = "myoung34/github-runner:latest"

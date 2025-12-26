@@ -2,8 +2,8 @@ docker:
     host: ""
 github:
     owner: manashmandal
-    repo: ""
-    scope: org
+    repo: test-gale
+    scope: repo
     token: ${GITHUB_TOKEN}
 log_level: info
 runner:
@@ -18,6 +18,6 @@ runner:
     network_mode: ""
 scaler:
     max_runners: 10
-    min_runners: 2
+    min_runners: 0
     poll_interval: 10s
     scale_up_delay: 5s
