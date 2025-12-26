@@ -38,14 +38,32 @@ Then use `runs-on: [self-hosted, gale]` in your workflows. Done.
 
 ---
 
+## Why Gale?
+
+> *"I have a perfectly good machine sitting idle. Why am I waiting 15 minutes for a GitHub-hosted runner to npm install?"*
+
+Sound familiar? You want self-hosted runners, but:
+
+- **Kubernetes?** You just want to run some tests, not become a CNCF certified architect
+- **Argo Workflows?** Cool, but you'll spend more time on YAML than actual code
+- **Actions Runner Controller?** Hope you enjoy debugging Helm charts at 2 AM
+- **Always-on runners?** Your electricity bill called, it's concerned
+
+**Gale is for the rest of us.** One binary. Docker. That mass of compute power under your desk finally doing something useful.
+
+Your machine will:
+- Pick up jobs instantly (webhook mode = no polling delays)
+- Spawn runners on-demand (no idle containers eating RAM)
+- Clean up after itself (ephemeral = fire-and-forget)
+- Scale from zero to hero (and back to zero when you're done)
+
+*Results may vary based on how beefy your machine is. A potato will still run like a potato.* 🥔
+
+---
+
 ## Overview
 
 Gale monitors your GitHub repositories for queued jobs and dynamically spawns Docker-based runners on demand. When a job completes, the runner exits and is cleaned up automatically.
-
-**Why Gale?**
-- **Cost savings**: No idle runners burning money
-- **Zero cold-start**: Runners spawn in seconds when jobs are queued
-- **Simple**: Single binary, no Kubernetes required
 
 ## Features
 
