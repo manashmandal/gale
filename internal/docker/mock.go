@@ -9,14 +9,14 @@ import (
 type MockClient struct {
 	mu sync.Mutex
 
-	EnsureImageFunc           func(ctx context.Context, imageName string) error
-	CreateRunnerFunc          func(ctx context.Context, cfg RunnerConfig) (*Runner, error)
-	ListRunnersFunc           func(ctx context.Context) ([]Runner, error)
-	GetActiveRunnerCountFunc  func(ctx context.Context) (int, error)
-	RemoveRunnerFunc          func(ctx context.Context, containerID string) error
-	CleanupExitedRunnersFunc  func(ctx context.Context) (int, error)
-	KillTimedOutRunnersFunc   func(ctx context.Context, timeout time.Duration) ([]Runner, error)
-	CloseFunc                 func() error
+	EnsureImageFunc          func(ctx context.Context, imageName string) error
+	CreateRunnerFunc         func(ctx context.Context, cfg RunnerConfig) (*Runner, error)
+	ListRunnersFunc          func(ctx context.Context) ([]Runner, error)
+	GetActiveRunnerCountFunc func(ctx context.Context) (int, error)
+	RemoveRunnerFunc         func(ctx context.Context, containerID string) error
+	CleanupExitedRunnersFunc func(ctx context.Context) (int, error)
+	KillTimedOutRunnersFunc  func(ctx context.Context, timeout time.Duration) ([]Runner, error)
+	CloseFunc                func() error
 
 	EnsureImageCalls          []string
 	CreateRunnerCalls         []RunnerConfig
