@@ -159,29 +159,26 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 	}
 
 	logger.Info("starting Tailscale node", "hostname", funnelHostname)
+	logger.Info("waiting for Tailscale connection (check browser if prompted to authenticate)...")
 
-	// Start the tsnet server
-	if err := srv.Start(); err != nil {
-		return fmt.Errorf("starting tsnet: %w", err)
+	// Use Up() which waits for Tailscale to be fully connected
+	// This will prompt for authentication on first run
+	status, err := srv.Up(ctx)
+	if err != nil {
+		return fmt.Errorf("connecting to Tailscale: %w", err)
 	}
 	defer srv.Close()
 
-	// Wait for Tailscale to be ready
+	// Get local client for TLS certificates
 	lc, err := srv.LocalClient()
 	if err != nil {
 		return fmt.Errorf("getting local client: %w", err)
 	}
 
-	// Get status to find our funnel URL
-	status, err := lc.Status(ctx)
-	if err != nil {
-		return fmt.Errorf("getting status: %w", err)
-	}
-
 	// Get the DNS name for the funnel URL
 	dnsName := status.Self.DNSName
 	if dnsName == "" {
-		return fmt.Errorf("no DNS name assigned yet - check Tailscale status")
+		return fmt.Errorf("no DNS name assigned - ensure Tailscale is properly configured")
 	}
 
 	// Remove trailing dot from DNS name
