@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: gale
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,6 +36,7 @@ jobs:
 
   lint:
     runs-on: gale
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,6 +59,7 @@ jobs:
 
   build:
     runs-on: gale
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
