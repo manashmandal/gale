@@ -227,6 +227,70 @@ To reduce API usage:
 - Use single-repo mode for high-frequency polling
 - Consider caching (future feature)
 
+## Deployment with Kamal
+
+Gale includes [Kamal](https://kamal-deploy.org/) configuration for easy deployment to remote servers, with optional Tailscale integration.
+
+### Setup
+
+1. Install Kamal:
+```bash
+gem install kamal
+```
+
+2. Configure secrets:
+```bash
+cp .kamal/secrets .kamal/secrets.local
+# Edit .kamal/secrets.local with your values
+```
+
+3. Deploy:
+```bash
+# Deploy to configured host
+./scripts/deploy.sh
+
+# Deploy to a Tailscale host
+./scripts/deploy.sh --tailscale my-server
+
+# Auto-discover hosts with tag:gale on Tailscale
+./scripts/deploy.sh --tailscale
+```
+
+### Tailscale Integration
+
+To use Tailscale for deployment:
+
+1. Get a Tailscale API key from https://login.tailscale.com/admin/settings/keys
+
+2. Tag your target servers with `tag:gale` in Tailscale ACLs
+
+3. Configure environment:
+```bash
+export TAILSCALE_API_KEY="tskey-api-xxxx"
+export TAILSCALE_TAILNET="your-tailnet.ts.net"
+```
+
+4. Deploy:
+```bash
+./scripts/deploy.sh --tailscale
+```
+
+### Manual Kamal Commands
+
+```bash
+# Deploy
+kamal deploy -c config/deploy.yml
+
+# View logs
+kamal logs -c config/deploy.yml
+
+# Open shell
+kamal shell -c config/deploy.yml
+
+# Rollback
+kamal rollback -c config/deploy.yml
+```
+
 ## License
 
 MIT License

@@ -1,0 +1,64 @@
+# Kamal deployment configuration for Gale
+# https://kamal-deploy.org/
+
+service: gale
+
+image: manashmandal/gale
+
+# Servers can be Tailscale hostnames or IPs
+servers:
+  web:
+    hosts:
+      - <%= ENV['GALE_HOST'] || 'gale-server' %>
+    options:
+      # Mount Docker socket for container management
+      volume:
+        - /var/run/docker.sock:/var/run/docker.sock
+
+# Container registry
+registry:
+  server: ghcr.io
+  username: <%= ENV['GITHUB_USERNAME'] || 'manashmandal' %>
+  password:
+    - GITHUB_TOKEN
+
+# Environment variables
+env:
+  clear:
+    GALE_CONFIG: /app/config.yaml
+  secret:
+    - GITHUB_TOKEN
+    - GITHUB_OWNER
+    - GITHUB_REPO
+
+# Health check
+healthcheck:
+  path: /healthz
+  port: 8080
+  interval: 30s
+
+# Build configuration
+builder:
+  dockerfile: Dockerfile
+  context: .
+  multiarch: false
+
+# SSH configuration (uses Tailscale SSH if available)
+ssh:
+  user: <%= ENV['SSH_USER'] || 'root' %>
+  # Use Tailscale SSH proxy if TAILSCALE_SSH is set
+  proxy: <%= ENV['TAILSCALE_SSH'] ? "tailscale ssh --" : nil %>
+
+# Traefik configuration (optional)
+# traefik:
+#   options:
+#     publish:
+#       - "443:443"
+#   args:
+#     entryPoints.websecure.address: ":443"
+
+# Accessories (optional services)
+# accessories:
+#   redis:
+#     image: redis:7-alpine
+#     port: 6379

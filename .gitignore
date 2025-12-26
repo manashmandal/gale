@@ -24,3 +24,4 @@ go.work
 # Config with secrets
 config.local.yaml
 .env
+.kamal/secrets.local
