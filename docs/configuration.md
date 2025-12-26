@@ -1,0 +1,115 @@
+# Configuration
+
+Gale uses a YAML configuration file with environment variable expansion.
+
+## Configuration File
+
+The default config file is `config.yaml` in the current directory. Use `-c` to specify a custom path:
+
+```bash
+gale start -c /etc/gale/config.yaml
+```
+
+## Full Configuration Reference
+
+```yaml
+# config.yaml
+github:
+  token: ${GITHUB_TOKEN}
+  owner: ${GITHUB_OWNER}
+  repos: []                   # Empty = all repos, or list specific repos
+  # repos:
+  #   - my-project
+  #   - another-repo
+  scope: ${GITHUB_SCOPE:-}    # "org", "repo", or "repos" (auto-detected)
+
+  # GitHub App configuration (alternative to token)
+  app:
+    app_id: 123456
+    private_key_path: /path/to/private-key.pem
+    # private_key: |          # Or inline (not recommended)
+    #   -----BEGIN RSA PRIVATE KEY-----
+    #   ...
+    webhook_secret: ${GALE_WEBHOOK_SECRET}
+
+docker:
+  host: ""                    # Default: unix:///var/run/docker.sock
+
+scaler:
+  min_runners: 0              # Minimum runners to keep alive (warm pool)
+  max_runners: 10             # Maximum concurrent runners
+  poll_interval: 10s          # How often to check for jobs
+  scale_up_delay: 5s          # Throttle between scale-up operations
+
+runner:
+  image: myoung34/github-runner:latest
+  labels:
+    - self-hosted
+    - linux
+    - x64
+    - docker
+  env: {}                     # Additional environment variables
+  network_mode: ""            # Docker network mode (e.g., "host", "bridge")
+
+webhook:
+  port: 8080                  # Webhook server port
+  secret: ${WEBHOOK_SECRET}   # GitHub webhook secret
+
+log_level: info               # debug, info, warn, error
+```
+
+## Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `GITHUB_TOKEN` | Personal Access Token with `repo` scope | Yes (unless using App) |
+| `GITHUB_OWNER` | Username or organization name | Yes |
+| `GITHUB_REPO` | Repository name (empty = all repos) | No |
+| `GITHUB_SCOPE` | `org` or `repo` (auto-detected) | No |
+| `GALE_WEBHOOK_SECRET` | Secret for webhook signature verification | No |
+| `GALE_PRIVATE_KEY` | GitHub App private key (alternative to file) | No |
+
+## Scope Detection
+
+Gale automatically detects the scope based on your configuration:
+
+- **`org`**: When `repos` is empty - monitors all repos in the organization
+- **`repo`**: When a single repo is specified
+- **`repos`**: When multiple specific repos are listed
+
+## Managing Configuration
+
+Use the CLI to view and modify configuration:
+
+```bash
+# Show current config
+gale config show
+
+# Validate config
+gale config validate
+
+# Set a value
+gale config set scaler.max_runners 20
+gale config set github.scope org
+gale config set log_level debug
+
+# Show config file path
+gale config path
+```
+
+## Warm Pool
+
+The `min_runners` setting maintains a warm pool of pre-started runners:
+
+```bash
+# Keep 3 runners always running
+gale pool 3
+
+# Scale to zero when idle (default)
+gale pool 0
+```
+
+Benefits of warm pool:
+- Eliminates cold start time for jobs
+- Runners are immediately available
+- Trade-off: consumes resources even when idle
