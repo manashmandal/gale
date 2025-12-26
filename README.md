@@ -29,23 +29,31 @@ go build -o bin/gale ./cmd/gale
 
 ## Quick Start
 
-1. Create a GitHub Personal Access Token at https://github.com/settings/tokens with `repo` scope
+1. Run the interactive setup:
+```bash
+./bin/gale init
+```
 
-2. Run gale:
+2. Start the autoscaler:
+```bash
+./bin/gale start
+```
+
+3. Trigger a workflow with `runs-on: gale` - gale will automatically spawn a runner!
+
+### Manual Setup
 
 ```bash
 export GITHUB_TOKEN="ghp_xxxxxxxxxxxx"
 export GITHUB_OWNER="your-username"
 
 # Monitor all repos (org mode)
-./bin/gale
+./bin/gale start
 
 # Or monitor a single repo
 export GITHUB_REPO="your-repo"
-./bin/gale
+./bin/gale start
 ```
-
-3. Trigger a workflow with `runs-on: self-hosted` - gale will automatically spawn a runner!
 
 ## Configuration
 
@@ -90,21 +98,59 @@ log_level: info               # debug, info, warn, error
 | `GITHUB_REPO` | Repository name (empty = all repos) | No |
 | `GITHUB_SCOPE` | `org` or `repo` (auto-detected) | No |
 
-## Usage
+## CLI Commands
 
-### Command Line Options
+### `gale init` - Interactive Setup
 
 ```bash
-./bin/gale [options]
-
-Options:
-  -config string
-        Path to config file (default "config.yaml")
-  -log-level string
-        Log level: debug, info, warn, error
-  -version
-        Show version
+gale init                    # Start setup wizard
+gale init --force           # Overwrite existing config
 ```
+
+### `gale start` - Start Autoscaler
+
+```bash
+gale start                   # Start with default config
+gale start -c /etc/gale.yaml # Use custom config
+gale start -l debug          # Enable debug logging
+```
+
+### `gale status` - Show Status
+
+```bash
+gale status                  # Show config, runners, and queued jobs
+```
+
+### `gale runners` - Manage Runners
+
+```bash
+gale runners list            # List running containers
+gale runners list --all      # Include exited containers
+gale runners clean           # Remove exited containers
+gale runners stop            # Stop all runners
+```
+
+### `gale config` - Manage Configuration
+
+```bash
+gale config show             # Display current config
+gale config validate         # Check config for errors
+gale config set KEY VALUE    # Set a config value
+gale config path             # Show config file path
+
+# Examples:
+gale config set scaler.max_runners 20
+gale config set github.scope org
+gale config set log_level debug
+```
+
+### `gale version` - Show Version
+
+```bash
+gale version
+```
+
+## Usage Examples
 
 ### Example: Single Repository
 
@@ -163,7 +209,7 @@ export GITHUB_OWNER="manashmandal"
 
 ## Example Workflow
 
-Create a workflow that uses self-hosted runners:
+Create a workflow that uses Gale runners:
 
 ```yaml
 # .github/workflows/build.yml
@@ -173,11 +219,13 @@ on: [push]
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: gale
     steps:
       - uses: actions/checkout@v4
-      - run: echo "Hello from self-hosted runner!"
+      - run: echo "Hello from Gale runner!"
 ```
+
+You can also use `runs-on: self-hosted` which is also detected by Gale.
 
 When this workflow is triggered, gale will:
 1. Detect the queued job

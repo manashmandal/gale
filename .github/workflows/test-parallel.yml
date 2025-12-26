@@ -5,7 +5,7 @@ on:
 
 jobs:
   job-1:
-    runs-on: self-hosted
+    runs-on: gale
     steps:
       - name: Job 1
         run: |
@@ -15,7 +15,7 @@ jobs:
           echo "Job 1 completed at $(date)"
 
   job-2:
-    runs-on: self-hosted
+    runs-on: gale
     steps:
       - name: Job 2
         run: |
@@ -25,7 +25,7 @@ jobs:
           echo "Job 2 completed at $(date)"
 
   job-3:
-    runs-on: self-hosted
+    runs-on: gale
     steps:
       - name: Job 3
         run: |
@@ -35,7 +35,7 @@ jobs:
           echo "Job 3 completed at $(date)"
 
   job-4:
-    runs-on: self-hosted
+    runs-on: gale
     steps:
       - name: Job 4
         run: |
@@ -45,7 +45,7 @@ jobs:
           echo "Job 4 completed at $(date)"
 
   job-5:
-    runs-on: self-hosted
+    runs-on: gale
     steps:
       - name: Job 5
         run: |

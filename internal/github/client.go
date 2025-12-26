@@ -146,7 +146,8 @@ func (c *Client) requiresSelfHosted(job *github.WorkflowJob) bool {
 		return false
 	}
 	for _, label := range job.Labels {
-		if strings.EqualFold(label, "self-hosted") {
+		// Match "gale" or "self-hosted" labels
+		if strings.EqualFold(label, "gale") || strings.EqualFold(label, "self-hosted") {
 			return true
 		}
 	}

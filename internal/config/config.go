@@ -74,7 +74,7 @@ func (c *Config) setDefaults() {
 		c.Runner.Image = "myoung34/github-runner:latest"
 	}
 	if len(c.Runner.Labels) == 0 {
-		c.Runner.Labels = []string{"self-hosted", "linux", "x64"}
+		c.Runner.Labels = []string{"gale", "self-hosted", "linux", "x64"}
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = "info"

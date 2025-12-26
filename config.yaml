@@ -41,6 +41,7 @@ runner:
 
   # Labels for job matching
   labels:
+    - gale
     - self-hosted
     - linux
     - x64
