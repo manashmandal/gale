@@ -23,10 +23,11 @@ type WebhookConfig struct {
 }
 
 type GitHubConfig struct {
-	Token string `yaml:"token"`
-	Owner string `yaml:"owner"`
-	Repo  string `yaml:"repo"`  // Optional: if empty, monitors all repos
-	Scope string `yaml:"scope"` // "org" or "repo" (default: org if repo is empty)
+	Token string   `yaml:"token"`
+	Owner string   `yaml:"owner"`
+	Repo  string   `yaml:"repo"`  // Deprecated: use repos instead
+	Repos []string `yaml:"repos"` // List of specific repos to monitor (empty = all repos)
+	Scope string   `yaml:"scope"` // "org", "repo", or "repos" (auto-detected)
 
 	// GitHub App configuration (alternative to PAT)
 	App GitHubAppConfig `yaml:"app"`
@@ -77,6 +78,23 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// Save writes the config to the specified file path
+func (c *Config) Save(path string) error {
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	header := `# Gale Configuration
+# Documentation: https://github.com/manashmandal/gale
+
+`
+	if err := os.WriteFile(path, []byte(header+string(data)), 0644); err != nil {
+		return fmt.Errorf("writing config file: %w", err)
+	}
+	return nil
+}
+
 func (c *Config) setDefaults() {
 	if c.Docker.Host == "" {
 		c.Docker.Host = "unix:///var/run/docker.sock"
@@ -102,18 +120,72 @@ func (c *Config) setDefaults() {
 	if c.LogLevel == "" {
 		c.LogLevel = "info"
 	}
-	// Default to org scope if no specific repo is set
+	// Migrate single repo to repos list for backward compatibility
+	if c.GitHub.Repo != "" && len(c.GitHub.Repos) == 0 {
+		c.GitHub.Repos = []string{c.GitHub.Repo}
+	}
+
+	// Default scope based on repos configuration
 	if c.GitHub.Scope == "" {
-		if c.GitHub.Repo == "" {
+		if len(c.GitHub.Repos) == 0 {
 			c.GitHub.Scope = "org"
-		} else {
+		} else if len(c.GitHub.Repos) == 1 {
 			c.GitHub.Scope = "repo"
+		} else {
+			c.GitHub.Scope = "repos"
 		}
 	}
 }
 
 func (c *Config) IsOrgScope() bool {
 	return c.GitHub.Scope == "org"
+}
+
+// HasSpecificRepos returns true if monitoring specific repos (not all)
+func (c *Config) HasSpecificRepos() bool {
+	return len(c.GitHub.Repos) > 0
+}
+
+// IsRepoMonitored checks if a given repo should be monitored
+func (c *Config) IsRepoMonitored(repo string) bool {
+	// If no specific repos configured, monitor all
+	if len(c.GitHub.Repos) == 0 {
+		return true
+	}
+	// Check if repo is in the list
+	for _, r := range c.GitHub.Repos {
+		if r == repo {
+			return true
+		}
+	}
+	return false
+}
+
+// GetRepos returns the list of repos to monitor
+func (c *Config) GetRepos() []string {
+	return c.GitHub.Repos
+}
+
+// AddRepo adds a repository to the monitored list
+func (c *Config) AddRepo(repo string) {
+	// Check if already exists
+	for _, r := range c.GitHub.Repos {
+		if r == repo {
+			return
+		}
+	}
+	c.GitHub.Repos = append(c.GitHub.Repos, repo)
+}
+
+// RemoveRepo removes a repository from the monitored list
+func (c *Config) RemoveRepo(repo string) bool {
+	for i, r := range c.GitHub.Repos {
+		if r == repo {
+			c.GitHub.Repos = append(c.GitHub.Repos[:i], c.GitHub.Repos[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // IsAppMode returns true if using GitHub App authentication

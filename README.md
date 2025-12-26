@@ -10,8 +10,9 @@ A JIT (Just-In-Time) autoscaler for GitHub Actions self-hosted runners. Gale mon
 - **Auto Cleanup**: Exited containers are automatically removed
 - **Docker-based**: Uses the popular `myoung34/github-runner` image
 - **Configurable**: Set max runners, poll intervals, labels, and more
-- **Webhook Mode**: Event-driven scaling via GitHub webhooks (recommended)
-- **GitHub App Support**: Better security with auto-rotating tokens and higher rate limits
+- **Webhook Mode**: Event-driven scaling via GitHub webhooks (recommended) *(untested)*
+- **GitHub App Support**: Better security with auto-rotating tokens and higher rate limits *(untested)*
+- **Multi-Repo Support**: Select specific repositories to monitor
 
 ## Installation
 
@@ -66,8 +67,11 @@ Gale uses a YAML configuration file with environment variable expansion:
 github:
   token: ${GITHUB_TOKEN}
   owner: ${GITHUB_OWNER}
-  repo: ${GITHUB_REPO:-}      # Leave empty for org-wide monitoring
-  scope: ${GITHUB_SCOPE:-}    # "org" or "repo" (auto-detected if empty)
+  repos: []                   # Empty = all repos, or list specific repos
+  # repos:
+  #   - my-project
+  #   - another-repo
+  scope: ${GITHUB_SCOPE:-}    # "org", "repo", or "repos" (auto-detected)
 
 docker:
   host: ""                    # Default: unix:///var/run/docker.sock
@@ -182,6 +186,19 @@ gale app setup              # Show setup instructions
 gale app validate           # Validate app configuration
 gale app create             # Interactive app creation wizard
 ```
+
+### `gale repo` - Repository Management
+
+```bash
+gale repo list              # List monitored repos
+gale repo add <repo>        # Add a repo to monitor
+gale repo add repo1 repo2   # Add multiple repos
+gale repo remove <repo>     # Stop monitoring a repo
+gale repo set repo1 repo2   # Set exact list of repos
+gale repo clear             # Monitor all repos (default)
+```
+
+When specific repos are configured, Gale only responds to events from those repos.
 
 ## Usage Examples
 

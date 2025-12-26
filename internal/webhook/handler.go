@@ -149,6 +149,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
+	// Check if this repo is monitored
+	repoName := extractRepoName(event.Repository.FullName)
+	if !h.cfg.IsRepoMonitored(repoName) {
+		h.logger.Debug("repo not in monitored list", "repo", repoName, "monitored", h.cfg.GetRepos())
+		return
+	}
+
 	// Check if job requires our runner
 	if !h.requiresGaleRunner(event.WorkflowJob.Labels) {
 		h.logger.Debug("job doesn't require gale runner", "labels", event.WorkflowJob.Labels)
@@ -264,4 +271,13 @@ func (h *Handler) GetActiveRunnerCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.activeRunners)
+}
+
+// extractRepoName extracts the repo name from "owner/repo" format
+func extractRepoName(fullName string) string {
+	parts := strings.Split(fullName, "/")
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return fullName
 }
