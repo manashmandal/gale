@@ -1,57 +1,23 @@
-# Gale - JIT GitHub Actions Runner Autoscaler
-# Configuration file
-
-github:
-  # GitHub Personal Access Token (requires 'repo' scope for repo-level, 'admin:org' for org-level)
-  token: ${GITHUB_TOKEN}
-
-  # Owner (username or organization name)
-  owner: ${GITHUB_OWNER}
-
-  # Repository name (optional - leave empty for org-wide monitoring)
-  # If empty, gale will monitor ALL repos under the owner
-  repo: ${GITHUB_REPO:-}
-
-  # Scope: "org" or "repo"
-  # - "org": Monitor all repos, spawn org-level runners (works for all repos)
-  # - "repo": Monitor single repo only
-  # Default: "org" if repo is empty, "repo" otherwise
-  scope: ${GITHUB_SCOPE:-}
-
 docker:
-  # Docker host (default: unix:///var/run/docker.sock)
-  host: ""
-
-scaler:
-  # Minimum number of runners to keep running
-  min_runners: 0
-
-  # Maximum number of runners to scale up to
-  max_runners: 10
-
-  # How often to check for queued jobs
-  poll_interval: 10s
-
-  # Minimum delay between scale-up operations
-  scale_up_delay: 5s
-
-runner:
-  # Docker image for runners
-  image: myoung34/github-runner:latest
-
-  # Labels for job matching
-  labels:
-    - gale
-    - self-hosted
-    - linux
-    - x64
-    - docker
-
-  # Additional environment variables for runners
-  env: {}
-
-  # Docker network mode (optional)
-  network_mode: ""
-
-# Log level: debug, info, warn, error
+    host: ""
+github:
+    owner: manashmandal
+    repo: ""
+    scope: org
+    token: ${GITHUB_TOKEN}
 log_level: info
+runner:
+    env: {}
+    image: myoung34/github-runner:latest
+    labels:
+        - gale
+        - self-hosted
+        - linux
+        - x64
+        - docker
+    network_mode: ""
+scaler:
+    max_runners: 10
+    min_runners: 2
+    poll_interval: 10s
+    scale_up_delay: 5s

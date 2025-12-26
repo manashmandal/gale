@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/go-github/v68/github"
 )
 
 const (
 	DefaultRateLimitThreshold = 2500 // Stop at 2500 of 5000 calls
+	DefaultCallsPerMinute     = 5    // Max 5 API calls per minute
 )
 
 // ErrRateLimitThreshold is returned when rate limit threshold is reached
@@ -27,6 +29,11 @@ type Client struct {
 	rateLimitLimit int
 	threshold      int
 	forceMode      bool
+
+	// Local rate limiting (calls per minute)
+	callsMu       sync.Mutex
+	callTimes     []time.Time
+	callsPerMin   int
 }
 
 type QueuedJob struct {
@@ -38,22 +45,24 @@ type QueuedJob struct {
 }
 
 type ClientOptions struct {
-	Token     string
-	Owner     string
-	Repo      string
-	Scope     string
-	Threshold int  // Rate limit threshold (default 2500)
-	Force     bool // Ignore threshold
+	Token       string
+	Owner       string
+	Repo        string
+	Scope       string
+	Threshold   int  // Rate limit threshold (default 2500)
+	Force       bool // Ignore threshold
+	CallsPerMin int  // Max API calls per minute (default 5)
 }
 
 func NewClient(token, owner, repo, scope string) *Client {
 	return NewClientWithOptions(ClientOptions{
-		Token:     token,
-		Owner:     owner,
-		Repo:      repo,
-		Scope:     scope,
-		Threshold: DefaultRateLimitThreshold,
-		Force:     false,
+		Token:       token,
+		Owner:       owner,
+		Repo:        repo,
+		Scope:       scope,
+		Threshold:   DefaultRateLimitThreshold,
+		Force:       false,
+		CallsPerMin: DefaultCallsPerMinute,
 	})
 }
 
@@ -63,14 +72,62 @@ func NewClientWithOptions(opts ClientOptions) *Client {
 	if threshold <= 0 {
 		threshold = DefaultRateLimitThreshold
 	}
-	return &Client{
-		client:    client,
-		owner:     opts.Owner,
-		repo:      opts.Repo,
-		scope:     opts.Scope,
-		threshold: threshold,
-		forceMode: opts.Force,
+	callsPerMin := opts.CallsPerMin
+	if callsPerMin <= 0 {
+		callsPerMin = DefaultCallsPerMinute
 	}
+	return &Client{
+		client:      client,
+		owner:       opts.Owner,
+		repo:        opts.Repo,
+		scope:       opts.Scope,
+		threshold:   threshold,
+		forceMode:   opts.Force,
+		callsPerMin: callsPerMin,
+		callTimes:   make([]time.Time, 0, callsPerMin),
+	}
+}
+
+// waitForRateLimit blocks until we can make another API call (max 5/min)
+func (c *Client) waitForRateLimit() {
+	c.callsMu.Lock()
+	defer c.callsMu.Unlock()
+
+	now := time.Now()
+	oneMinuteAgo := now.Add(-time.Minute)
+
+	// Remove calls older than 1 minute
+	valid := c.callTimes[:0]
+	for _, t := range c.callTimes {
+		if t.After(oneMinuteAgo) {
+			valid = append(valid, t)
+		}
+	}
+	c.callTimes = valid
+
+	// If at limit, wait until oldest call expires
+	if len(c.callTimes) >= c.callsPerMin {
+		waitUntil := c.callTimes[0].Add(time.Minute)
+		sleepDuration := time.Until(waitUntil)
+		if sleepDuration > 0 {
+			c.callsMu.Unlock()
+			time.Sleep(sleepDuration)
+			c.callsMu.Lock()
+			// Clean up again after sleeping
+			now = time.Now()
+			oneMinuteAgo = now.Add(-time.Minute)
+			valid = c.callTimes[:0]
+			for _, t := range c.callTimes {
+				if t.After(oneMinuteAgo) {
+					valid = append(valid, t)
+				}
+			}
+			c.callTimes = valid
+		}
+	}
+
+	// Record this call
+	c.callTimes = append(c.callTimes, time.Now())
 }
 
 // SetForceMode enables/disables force mode (ignores rate limit threshold)
@@ -178,6 +235,7 @@ func (c *Client) getRepoQueuedJobs(ctx context.Context, owner, repo string) ([]Q
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
+	c.waitForRateLimit() // Wait for local rate limit (5/min)
 	queuedRuns, resp, err := c.client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
 	c.updateRateLimit(resp)
 	if err != nil {
@@ -189,6 +247,7 @@ func (c *Client) getRepoQueuedJobs(ctx context.Context, owner, repo string) ([]Q
 	}
 
 	opts.Status = "in_progress"
+	c.waitForRateLimit() // Wait for local rate limit (5/min)
 	inProgressRuns, resp, err := c.client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
 	c.updateRateLimit(resp)
 	if err != nil {
@@ -202,6 +261,7 @@ func (c *Client) getRepoQueuedJobs(ctx context.Context, owner, repo string) ([]Q
 			return queuedJobs, err // Return what we have so far
 		}
 
+		c.waitForRateLimit() // Wait for local rate limit (5/min)
 		jobs, resp, err := c.client.Actions.ListWorkflowJobs(ctx, owner, repo, *run.ID, &github.ListWorkflowJobsOptions{
 			Filter:      "all",
 			ListOptions: github.ListOptions{PerPage: 100},
@@ -270,6 +330,7 @@ func (c *Client) listRepos(ctx context.Context) ([]Repo, error) {
 			return allRepos, err // Return what we have
 		}
 
+		c.waitForRateLimit() // Wait for local rate limit (5/min)
 		repos, resp, err := c.client.Repositories.ListByOrg(ctx, c.owner, opts)
 		c.updateRateLimit(resp)
 		if err != nil {
@@ -312,6 +373,7 @@ func (c *Client) listUserRepos(ctx context.Context) ([]Repo, error) {
 			return allRepos, err // Return what we have
 		}
 
+		c.waitForRateLimit() // Wait for local rate limit (5/min)
 		repos, resp, err := c.client.Repositories.ListByUser(ctx, c.owner, opts)
 		c.updateRateLimit(resp)
 		if err != nil {
