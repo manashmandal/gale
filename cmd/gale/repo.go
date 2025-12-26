@@ -128,7 +128,7 @@ func runRepoAdd(cmd *cobra.Command, args []string) error {
 			parts := strings.Split(repo, "/")
 			repo = parts[len(parts)-1]
 		}
-		if !cfg.IsRepoMonitored(repo) {
+		if !isRepoInList(cfg.GetRepos(), repo) {
 			cfg.AddRepo(repo)
 			added = append(added, repo)
 		}
@@ -268,4 +268,14 @@ func runRepoSet(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// isRepoInList checks if a repo is explicitly in the list
+func isRepoInList(repos []string, repo string) bool {
+	for _, r := range repos {
+		if r == repo {
+			return true
+		}
+	}
+	return false
 }
