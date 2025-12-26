@@ -43,8 +43,16 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(w, "Config file:\t%s\n", cfgFile)
 	fmt.Fprintf(w, "Owner:\t%s\n", cfg.GitHub.Owner)
-	if cfg.GitHub.Repo != "" {
-		fmt.Fprintf(w, "Repository:\t%s\n", cfg.GitHub.Repo)
+	repos := cfg.GetRepos()
+	if len(repos) == 0 {
+		fmt.Fprintf(w, "Repositories:\tALL\n")
+	} else if len(repos) == 1 {
+		fmt.Fprintf(w, "Repository:\t%s\n", repos[0])
+	} else {
+		fmt.Fprintf(w, "Repositories:\t%d repos\n", len(repos))
+		for _, r := range repos {
+			fmt.Fprintf(w, "  -\t%s\n", r)
+		}
 	}
 	fmt.Fprintf(w, "Scope:\t%s\n", cfg.GitHub.Scope)
 	fmt.Fprintf(w, "Max runners:\t%d\n", cfg.Scaler.MaxRunners)
