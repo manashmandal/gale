@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -49,26 +50,89 @@ Setup (Tailscale Funnel - recommended):
 Example:
   gale webhook
   gale webhook --port 9000
-  gale webhook --funnel              # Use Tailscale Funnel
-  gale webhook --funnel --hostname gale  # Custom hostname
+  gale webhook --funnel              # Use Tailscale Funnel (hostname: gale-<machine>)
+  gale webhook --funnel --hostname my-gale  # Custom hostname
+  gale webhook --funnel --daemon     # Run in background
   gale webhook --log-level debug`,
 	RunE: runWebhook,
 }
 
 var (
-	webhookPort    int
-	useFunnel      bool
-	funnelHostname string
+	webhookPort       int
+	useFunnel         bool
+	funnelHostname    string
+	webhookDaemonMode bool
 )
 
 func init() {
 	webhookCmd.Flags().IntVarP(&webhookPort, "port", "p", 0, "port to listen on (default 8080)")
 	webhookCmd.Flags().BoolVar(&useFunnel, "funnel", false, "use Tailscale Funnel for public HTTPS endpoint")
-	webhookCmd.Flags().StringVar(&funnelHostname, "hostname", "gale", "Tailscale hostname (used with --funnel)")
+	webhookCmd.Flags().StringVar(&funnelHostname, "hostname", "", "Tailscale hostname (default: gale-<machine-hostname>)")
+	webhookCmd.Flags().BoolVarP(&webhookDaemonMode, "daemon", "d", false, "run in background (daemon mode)")
 	rootCmd.AddCommand(webhookCmd)
 }
 
+func getDefaultFunnelHostname() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return "gale"
+	}
+	return fmt.Sprintf("gale-%s", hostname)
+}
+
+func startWebhookDaemon() error {
+	// Build command with same args but without --daemon
+	args := []string{"webhook"}
+	if useFunnel {
+		args = append(args, "--funnel")
+	}
+	if funnelHostname != "" {
+		args = append(args, "--hostname", funnelHostname)
+	}
+	if webhookPort > 0 {
+		args = append(args, "--port", fmt.Sprintf("%d", webhookPort))
+	}
+	if cfgFile != "config.yaml" {
+		args = append(args, "--config", cfgFile)
+	}
+	if logLevel != "" {
+		args = append(args, "--log-level", logLevel)
+	}
+
+	// Get the executable path
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("getting executable: %w", err)
+	}
+
+	cmd := exec.Command(exe, args...)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+
+	// Detach from parent
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting daemon: %w", err)
+	}
+
+	fmt.Printf("Gale webhook started in background (PID: %d)\n", cmd.Process.Pid)
+	if useFunnel {
+		fmt.Printf("Note: Check logs for Tailscale Funnel URL\n")
+	}
+	fmt.Printf("Use 'gale stop' or 'kill %d' to stop\n", cmd.Process.Pid)
+	return nil
+}
+
 func runWebhook(cmd *cobra.Command, args []string) error {
+	// If daemon mode, fork and exit
+	if webhookDaemonMode {
+		return startWebhookDaemon()
+	}
+
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -80,6 +144,11 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 
 	if webhookPort > 0 {
 		cfg.Webhook.Port = webhookPort
+	}
+
+	// Set default funnel hostname if not provided
+	if funnelHostname == "" {
+		funnelHostname = getDefaultFunnelHostname()
 	}
 
 	logger := setupLogger(cfg.LogLevel)

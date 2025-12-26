@@ -1,18 +1,63 @@
-# Gale
+<p align="center">
+  <img src="assets/logo.png" alt="Gale Logo" width="120" height="120">
+</p>
 
-A JIT (Just-In-Time) autoscaler for GitHub Actions self-hosted runners. Gale monitors your GitHub repositories for queued jobs and dynamically spawns Docker-based runners on demand.
+<h1 align="center">Gale</h1>
+
+<p align="center">
+  <strong>Just-In-Time Autoscaler for GitHub Actions Self-Hosted Runners</strong>
+</p>
+
+<p align="center">
+  <a href="#tldr">TL;DR</a> •
+  <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#webhook-mode-recommended">Webhook Mode</a> •
+  <a href="#tailscale-funnel">Tailscale Funnel</a>
+</p>
+
+---
+
+## TL;DR
+
+```bash
+# Install
+git clone https://github.com/manashmandal/gale.git && cd gale
+go build -o bin/gale ./cmd/gale
+
+# Setup (interactive)
+./bin/gale init
+
+# Run (pick one)
+./bin/gale start                    # Polling mode
+./bin/gale webhook                  # Webhook mode (local)
+./bin/gale webhook --funnel         # Webhook + Tailscale Funnel (zero-config public HTTPS)
+```
+
+Then use `runs-on: [self-hosted, gale]` in your workflows. Done.
+
+---
+
+## Overview
+
+Gale monitors your GitHub repositories for queued jobs and dynamically spawns Docker-based runners on demand. When a job completes, the runner exits and is cleaned up automatically.
+
+**Why Gale?**
+- **Cost savings**: No idle runners burning money
+- **Zero cold-start**: Runners spawn in seconds when jobs are queued
+- **Simple**: Single binary, no Kubernetes required
 
 ## Features
 
-- **JIT Scaling**: Runners are created only when jobs are queued, saving resources
-- **Multi-Repo Support**: Monitor all repositories under a user/organization or a single repo
+- **JIT Scaling**: Runners spawn only when jobs are queued, saving resources
+- **Webhook Mode**: Event-driven scaling via GitHub webhooks (recommended)
+- **Tailscale Funnel**: Zero-config public HTTPS endpoint for webhooks
+- **Multi-Repo Support**: Monitor all repos in an org or select specific ones
 - **Ephemeral Runners**: Runners automatically exit after completing a job
 - **Auto Cleanup**: Exited containers are automatically removed
 - **Docker-based**: Uses the popular `myoung34/github-runner` image
-- **Configurable**: Set max runners, poll intervals, labels, and more
-- **Webhook Mode**: Event-driven scaling via GitHub webhooks (recommended) *(untested)*
-- **GitHub App Support**: Better security with auto-rotating tokens and higher rate limits *(untested)*
-- **Multi-Repo Support**: Select specific repositories to monitor
+- **GitHub App Support**: Better security with auto-rotating tokens and higher rate limits
+- **Daemon Mode**: Run in background with `gale start --daemon`
 
 ## Installation
 
@@ -223,39 +268,37 @@ export GITHUB_OWNER="manashmandal"
 
 ## How It Works
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Gale                                │
-│                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-│  │   GitHub    │    │   Scaler    │    │   Docker    │     │
-│  │   Client    │───▶│   Logic     │───▶│   Client    │     │
-│  └─────────────┘    └─────────────┘    └─────────────┘     │
-│        │                   │                  │             │
-│        ▼                   ▼                  ▼             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-│  │ Poll for    │    │ Calculate   │    │ Create/     │     │
-│  │ queued jobs │    │ desired     │    │ Remove      │     │
-│  │ across repos│    │ runner count│    │ containers  │     │
-│  └─────────────┘    └─────────────┘    └─────────────┘     │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Docker Host                              │
-│                                                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
-│  │ Runner 1 │  │ Runner 2 │  │ Runner 3 │  │ Runner N │   │
-│  │(ephemeral)│  │(ephemeral)│  │(ephemeral)│  │(ephemeral)│   │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Gale
+        GH[GitHub Client] --> SC[Scaler Logic]
+        SC --> DC[Docker Client]
+    end
+
+    subgraph Sources
+        API[GitHub API<br/>Polling Mode]
+        WH[GitHub Webhook<br/>Webhook Mode]
+    end
+
+    API --> GH
+    WH --> GH
+
+    subgraph Docker Host
+        DC --> R1[Runner 1<br/>ephemeral]
+        DC --> R2[Runner 2<br/>ephemeral]
+        DC --> RN[Runner N<br/>ephemeral]
+    end
+
+    R1 --> GHA[GitHub Actions]
+    R2 --> GHA
+    RN --> GHA
 ```
 
-1. **Poll**: Gale periodically checks GitHub API for queued workflow jobs
-2. **Filter**: Only jobs with `runs-on: self-hosted` are considered
-3. **Scale**: Compares queued jobs vs active runners, spawns new runners if needed
+1. **Detect**: Gale receives job events (webhook) or polls GitHub API
+2. **Filter**: Only jobs matching configured labels are processed
+3. **Scale**: Spawns new runners for queued jobs (up to max_runners)
 4. **Execute**: Runners pick up jobs and execute them
-5. **Cleanup**: Ephemeral runners exit after one job, gale removes the containers
+5. **Cleanup**: Ephemeral runners exit after one job, containers are removed
 
 ## Example Workflow
 
@@ -328,28 +371,121 @@ To reduce API usage:
 
 ## Webhook Mode (Recommended)
 
-Instead of polling the GitHub API, Gale can receive webhook events directly from GitHub when jobs are queued. This is the recommended mode for production use.
+Instead of polling the GitHub API, Gale can receive webhook events directly from GitHub when jobs are queued. **This is the recommended mode for production use.**
 
-### Webhook Setup
+### Why Webhook > Polling?
 
-1. Configure your webhook in GitHub:
-   - Go to your repo or org Settings > Webhooks > Add webhook
-   - **Payload URL**: `https://your-server:8080/webhook`
+| Aspect | Polling Mode | Webhook Mode |
+|--------|--------------|--------------|
+| API Rate Limit | Consumes 5,000 req/hr limit | Zero API calls |
+| Response Time | Up to `poll_interval` delay | Instant (~100ms) |
+| Resource Usage | Constant CPU/network | Near-zero when idle |
+| Scalability | Limited by rate limits | Unlimited repos |
+
+**The Math**: Polling every 10s = 360 API calls/hour per repo. With 14 repos, you'd hit the 5,000/hr limit in under an hour. Webhook mode uses **zero** API calls for job detection.
+
+### Webhook Setup Options
+
+#### Option 1: Tailscale Funnel (Recommended)
+
+Zero-config public HTTPS endpoint. No port forwarding, no DNS, no TLS certificates to manage.
+
+```bash
+gale webhook --funnel
+```
+
+On first run, authenticate with Tailscale when prompted. Gale will display your public webhook URL:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Gale Webhook Server (Tailscale Funnel)                     │
+├─────────────────────────────────────────────────────────────┤
+│  Webhook URL: https://gale.your-tailnet.ts.net/webhook      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Use this URL in your GitHub webhook settings.
+
+#### Option 2: Local Server
+
+If you have a public IP or reverse proxy:
+
+```bash
+gale webhook --port 8080
+```
+
+### GitHub Webhook Configuration
+
+1. Go to your repo/org → Settings → Webhooks → Add webhook
+2. Configure:
+   - **Payload URL**: Your Funnel URL or `https://your-server:8080/webhook`
    - **Content type**: `application/json`
    - **Secret**: (optional but recommended)
    - **Events**: Select "Workflow jobs"
+3. Save and verify the ping succeeds
 
-2. Configure Gale:
-```yaml
-webhook:
-  port: 8080
-  secret: ${GALE_WEBHOOK_SECRET}  # Optional
+## Tailscale Funnel
+
+[Tailscale Funnel](https://tailscale.com/kb/1223/funnel/) allows you to expose your local Gale webhook server to the public internet without:
+
+- Port forwarding or firewall configuration
+- Static IP addresses
+- DNS setup
+- TLS certificate management
+
+### How It Works
+
+```mermaid
+flowchart LR
+    GH[GitHub Webhook] -->|HTTPS| TS[Tailscale Edge<br/>TLS termination]
+    TS -->|WireGuard| G[Gale<br/>local machine]
+    G -->|Docker API| R[Runner Container]
 ```
 
-3. Start Gale:
+1. GitHub sends webhook to your public Funnel URL
+2. Tailscale receives the request at their edge servers
+3. Request is encrypted and forwarded to your machine via WireGuard
+4. Gale receives the webhook and spawns a runner
+
+### Setup
+
 ```bash
-gale webhook
+# First run - will prompt for Tailscale authentication
+gale webhook --funnel
+
+# Run in background (daemon mode)
+gale webhook --funnel --daemon
 ```
+
+The hostname defaults to `gale-<machine-hostname>` (e.g., `gale-xps`, `gale-macbook`) to differentiate between machines. Override with `--hostname`:
+
+```bash
+gale webhook --funnel --hostname my-custom-name
+```
+
+### Prerequisites
+
+1. [Tailscale](https://tailscale.com/download) installed (not required to be running - gale uses embedded tsnet)
+2. Funnel enabled in your Tailscale ACL policy:
+   ```json
+   "nodeAttrs": [
+     {
+       "target": ["*"],
+       "attr": ["funnel"]
+     }
+   ]
+   ```
+
+### Benefits
+
+| Feature | Traditional Setup | Tailscale Funnel |
+|---------|-------------------|------------------|
+| Public IP | Required | Not needed |
+| Port forwarding | Manual config | Automatic |
+| TLS certificates | Let's Encrypt/manual | Automatic |
+| DNS | Required | Automatic (`*.ts.net`) |
+| Firewall | Open ports | No changes |
+| Setup time | Hours | Minutes |
 
 ## GitHub App Authentication
 
