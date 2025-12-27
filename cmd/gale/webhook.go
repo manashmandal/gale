@@ -270,10 +270,9 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 	defer ln.Close()
 
 	server := &http.Server{
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Handler:     mux,
+		ReadTimeout: 10 * time.Second,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	go func() {
