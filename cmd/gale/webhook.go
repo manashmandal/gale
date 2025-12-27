@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/manashmandal/gale/internal/config"
 	"github.com/manashmandal/gale/internal/webhook"
 	"github.com/spf13/cobra"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
 
@@ -225,27 +227,78 @@ func runLocalServer(ctx context.Context, cancel context.CancelFunc, sigCh chan o
 }
 
 func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os.Signal, mux *http.ServeMux, logger interface{ Info(string, ...any) }, cfg *config.Config) error {
+	// ANSI color codes
+	const (
+		colorReset  = "\033[0m"
+		colorRed    = "\033[31m"
+		colorGreen  = "\033[32m"
+		colorYellow = "\033[33m"
+	)
+
 	// Create tsnet server
 	stateDir := filepath.Join(os.TempDir(), "gale-tsnet")
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return fmt.Errorf("creating state dir: %w", err)
 	}
 
+	fmt.Printf("  • Creating Tailscale node (hostname: %s)...\n", funnelHostname)
+
+	// Suppress tsnet's verbose internal logging
+	origLogOutput := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(origLogOutput)
+
 	srv := &tsnet.Server{
 		Hostname: funnelHostname,
 		Dir:      stateDir,
-		Logf:     log.Printf,
+		Logf:     func(format string, args ...any) {}, // Suppress verbose logs
 	}
 
-	logger.Info("starting Tailscale node", "hostname", funnelHostname)
-	logger.Info("waiting for Tailscale connection (check browser if prompted to authenticate)...")
+	fmt.Print("  • Connecting to Tailscale network...")
 
-	// Use Up() which waits for Tailscale to be fully connected
-	// This will prompt for authentication on first run
-	status, err := srv.Up(ctx)
-	if err != nil {
-		return fmt.Errorf("connecting to Tailscale: %w", err)
+	// Start the server in a goroutine to handle auth URL
+	upDone := make(chan struct{})
+	var status *ipnstate.Status
+	var upErr error
+
+	go func() {
+		status, upErr = srv.Up(ctx)
+		close(upDone)
+	}()
+
+	// Check for auth URL while waiting for Up() to complete
+	authShown := false
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+waitLoop:
+	for {
+		select {
+		case <-upDone:
+			break waitLoop
+		case <-ticker.C:
+			if !authShown {
+				lc, err := srv.LocalClient()
+				if err == nil {
+					st, err := lc.Status(ctx)
+					if err == nil && st.AuthURL != "" {
+						fmt.Printf("\n\n%s  ✖ Authentication required!%s\n", colorRed, colorReset)
+						fmt.Printf("%s    Please visit: %s%s\n\n", colorRed, st.AuthURL, colorReset)
+						authShown = true
+					}
+				}
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+
+	if upErr != nil {
+		fmt.Printf(" %s✖%s\n", colorRed, colorReset)
+		return fmt.Errorf("connecting to Tailscale: %w", upErr)
+	}
+	fmt.Printf(" %s✓%s\n", colorGreen, colorReset)
+
 	defer srv.Close()
 
 	// Get the DNS name for the funnel URL
@@ -261,12 +314,15 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 
 	funnelURL := fmt.Sprintf("https://%s/webhook", dnsName)
 
+	fmt.Print("  • Creating Funnel listener...")
+
 	// Get funnel listener with FunnelOnly() - accepts only public internet traffic
-	// Tailscale handles TLS termination at their edge, so we serve plain HTTP
 	ln, err := srv.ListenFunnel("tcp", ":443", tsnet.FunnelOnly())
 	if err != nil {
+		fmt.Printf(" %s✖%s\n", colorRed, colorReset)
 		return fmt.Errorf("creating funnel listener: %w", err)
 	}
+	fmt.Printf(" %s✓%s\n", colorGreen, colorReset)
 	defer ln.Close()
 
 	server := &http.Server{
@@ -277,17 +333,14 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 
 	go func() {
 		<-sigCh
-		logger.Info("received shutdown signal")
+		fmt.Println("\nReceived shutdown signal, stopping...")
 		cancel()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		server.Shutdown(shutdownCtx)
 	}()
 
-	logger.Info("Tailscale Funnel ready",
-		"url", funnelURL,
-		"hostname", funnelHostname,
-	)
+	fmt.Printf("  • Funnel ready! %s✓%s\n", colorGreen, colorReset)
 	fmt.Println()
 	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
 	fmt.Println("│  Gale Webhook Server (Tailscale Funnel)                     │")
@@ -302,11 +355,12 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 	fmt.Println()
 
 	if cfg.GetWebhookSecret() != "" {
-		logger.Info("webhook signature verification enabled")
+		fmt.Printf("%s✓%s Webhook signature verification enabled\n", colorGreen, colorReset)
 	} else {
-		logger.Info("⚠️  SECURITY WARNING: webhook signature verification disabled")
-		logger.Info("⚠️  Anyone can send forged webhook events. Configure webhook.secret for production use.")
+		fmt.Printf("%s⚠ WARNING:%s Webhook signature verification disabled\n", colorYellow, colorReset)
+		fmt.Printf("  Anyone can send forged webhook events. Configure webhook.secret for production.\n")
 	}
+	fmt.Println()
 
 	// Serve plain HTTP - TLS is terminated by Tailscale Funnel
 	if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
