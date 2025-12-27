@@ -84,6 +84,12 @@ func NewHandlerWithDocker(cfg *config.Config, logger *slog.Logger, dockerClient 
 		activeRunners: make(map[int64]string),
 	}
 
+	// Ensure runner image is available (pull if needed)
+	logger.Info("ensuring runner image is available", "image", cfg.Runner.Image)
+	if err := dockerClient.EnsureImage(context.Background(), cfg.Runner.Image); err != nil {
+		return nil, fmt.Errorf("ensuring runner image: %w", err)
+	}
+
 	// Initialize GitHub App client if in app mode
 	if cfg.IsAppMode() {
 		privateKey, err := cfg.GetPrivateKey()
@@ -248,6 +254,29 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 		"container_id", runner.ContainerID[:12],
 		"repo", event.Repository.FullName,
 	)
+
+	// Monitor for early container exit (indicates registration failure)
+	go h.monitorRunnerStartup(runner.ContainerID, event.WorkflowJob.ID, event.WorkflowJob.Name)
+}
+
+func (h *Handler) monitorRunnerStartup(containerID string, jobID int64, jobName string) {
+	// Wait a few seconds for runner to register
+	time.Sleep(5 * time.Second)
+
+	exited, err := h.docker.IsContainerExited(context.Background(), containerID)
+	if err != nil {
+		return // Container may have been removed already
+	}
+
+	if exited {
+		h.logger.Error("runner container exited immediately - likely token/permission issue",
+			"job_id", jobID,
+			"job_name", jobName,
+			"container_id", containerID[:12],
+			"hint", "Check container logs with: docker logs "+containerID[:12],
+			"common_causes", "GitHub App needs 'Administration: Read & Write' permission, or PAT needs 'repo' and 'admin:org' scopes",
+		)
+	}
 }
 
 func (h *Handler) handleCompleted(ctx context.Context, event *WorkflowJobEvent) {

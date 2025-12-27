@@ -6,12 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manashmandal/gale/internal/config"
 	"github.com/manashmandal/gale/internal/docker"
@@ -1254,5 +1256,91 @@ func TestServeHTTP_NoSecret(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("no secret status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestMonitorRunnerStartup_ContainerExited(t *testing.T) {
+	mockDocker := docker.NewMockClient()
+	mockDocker.IsContainerExitedFunc = func(ctx context.Context, containerID string) (bool, error) {
+		return true, nil // Container exited
+	}
+
+	h := &Handler{
+		docker: mockDocker,
+		logger: testLogger(),
+	}
+
+	// Run in goroutine since it has a sleep
+	done := make(chan struct{})
+	go func() {
+		h.monitorRunnerStartup("abcdefghijklmnop", 123, "test-job")
+		close(done)
+	}()
+
+	// Wait for completion (5s sleep + buffer)
+	select {
+	case <-done:
+		// Success
+	case <-time.After(10 * time.Second):
+		t.Fatal("monitorRunnerStartup timed out")
+	}
+
+	// Verify IsContainerExited was called
+	if len(mockDocker.IsContainerExitedCalls) != 1 {
+		t.Errorf("IsContainerExitedCalls = %d, want 1", len(mockDocker.IsContainerExitedCalls))
+	}
+}
+
+func TestMonitorRunnerStartup_ContainerRunning(t *testing.T) {
+	mockDocker := docker.NewMockClient()
+	mockDocker.IsContainerExitedFunc = func(ctx context.Context, containerID string) (bool, error) {
+		return false, nil // Container still running
+	}
+
+	h := &Handler{
+		docker: mockDocker,
+		logger: testLogger(),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		h.monitorRunnerStartup("abcdefghijklmnop", 123, "test-job")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - no error logged for running container
+	case <-time.After(10 * time.Second):
+		t.Fatal("monitorRunnerStartup timed out")
+	}
+
+	if len(mockDocker.IsContainerExitedCalls) != 1 {
+		t.Errorf("IsContainerExitedCalls = %d, want 1", len(mockDocker.IsContainerExitedCalls))
+	}
+}
+
+func TestMonitorRunnerStartup_CheckError(t *testing.T) {
+	mockDocker := docker.NewMockClient()
+	mockDocker.IsContainerExitedFunc = func(ctx context.Context, containerID string) (bool, error) {
+		return false, fmt.Errorf("container not found")
+	}
+
+	h := &Handler{
+		docker: mockDocker,
+		logger: testLogger(),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		h.monitorRunnerStartup("abcdefghijklmnop", 123, "test-job")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - returns silently on error
+	case <-time.After(10 * time.Second):
+		t.Fatal("monitorRunnerStartup timed out")
 	}
 }
