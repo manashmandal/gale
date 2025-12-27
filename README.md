@@ -14,7 +14,8 @@
   <a href="#installation">Installation</a> •
   <a href="#getting-started">Getting Started</a> •
   <a href="#how-it-works">How It Works</a> •
-  <a href="#documentation">Docs</a>
+  <a href="#documentation">Docs</a> •
+  <a href="#cicd-gotchas-for-self-hosted-runners">Gotchas</a>
 </p>
 
 ---
@@ -235,6 +236,60 @@ Without signature verification, anyone can send forged webhook events to trigger
 - Use environment variables for tokens: `token: ${GITHUB_TOKEN}`
 - Consider using GitHub App authentication instead of PATs for auto-rotating tokens
 - Never commit tokens to version control
+
+---
+
+## CI/CD Gotchas for Self-Hosted Runners
+
+When using Gale with GitHub Actions on self-hosted runners, be aware of these common issues:
+
+### Go Cache Hangs
+
+The `actions/setup-go` action's built-in caching can hang indefinitely on self-hosted runners when uploading cache to GitHub's cache service.
+
+**Fix:** Disable caching in your workflow:
+
+```yaml
+- name: Setup Go
+  uses: actions/setup-go@v5
+  with:
+    go-version: '1.23'
+    cache: false  # Disable cache to prevent hangs
+```
+
+### Missing CLI Tools
+
+Self-hosted runners may lack common tools that GitHub-hosted runners include (e.g., `bc`, `jq`, `tree`).
+
+**Fix:** Either install missing tools on your runner image, or use portable alternatives:
+
+```yaml
+# Instead of bc for comparisons
+- run: |
+    # Bad: bc may not exist
+    if [ "$(echo "$VALUE < 70" | bc)" -eq 1 ]; then ...
+
+    # Good: use awk instead
+    if awk "BEGIN {exit !($VALUE < 70)}"; then ...
+```
+
+### Cache Contention
+
+Parallel jobs may fail with "Unable to reserve cache with key..." when multiple jobs try to save the same cache simultaneously.
+
+**Fix:** Use unique cache keys per job, or disable caching entirely for parallel workflows.
+
+### Toolchain Auto-Download
+
+If your `go.mod` specifies a Go version newer than what's installed, Go will attempt to auto-download it via `GOTOOLCHAIN=auto`. This can cause unexpected behavior.
+
+**Fix:** Ensure your CI Go version matches or exceeds the `go.mod` requirement:
+
+```yaml
+- uses: actions/setup-go@v5
+  with:
+    go-version: '1.23'  # Should match go.mod
+```
 
 ---
 
