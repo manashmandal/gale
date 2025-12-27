@@ -63,6 +63,8 @@ Sound familiar? You want self-hosted runners, but:
 
 - **Faster builds on modest hardware.** A 2019 Dell XPS 15 7590 with 64GB RAM and a 1Gbps internet connection runs workflows in ~1 minute that take 3-5 minutes on GitHub-hosted runners. Your old laptop can outperform the cloud.
 
+- **Future-proof your CI/CD.** [GitHub Actions pricing is changing](https://github.blog/changelog/2025-12-16-coming-soon-simpler-pricing-and-a-better-experience-for-github-actions/) — long-running builds on private repos will burn through your quota faster. Self-hosted runners give you predictable costs and unlimited minutes.
+
 ---
 
 ## Features
