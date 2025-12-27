@@ -67,6 +67,32 @@ Sound familiar? You want self-hosted runners, but:
 
 ---
 
+## When NOT to Use Gale
+
+Gale is intentionally simple. It's not the right tool if:
+
+- **You're using public repositories.** GitHub provides unlimited free minutes for public repos. Just use GitHub-hosted runners.
+
+- **You already have Kubernetes with Argo Workflows / Tekton / etc.** If your CI/CD already offloads work to pods across a cluster, you have better orchestration than Gale provides. Consider [Actions Runner Controller](https://github.com/actions/actions-runner-controller) instead.
+
+- **You need multi-machine orchestration.** Gale runs on a single Docker host. If you need runners coordinated across multiple machines with load balancing and failover, look at ARC or commercial solutions.
+
+- **You need Windows or macOS runners.** Gale spawns Linux containers. For native Windows/macOS builds, you'll need a different solution.
+
+- **You need enterprise-grade HA.** Gale is a single binary with no clustering support. If the host goes down, your runners go with it.
+
+### Important Notes
+
+| Topic | Note |
+|-------|------|
+| **Token Permissions** | GitHub App needs `Administration: Read & Write` permission to register runners. PATs need `repo` and `admin:org` scopes. |
+| **Docker Socket** | Runners get Docker socket access for DinD workflows. This is a security tradeoff — only run on trusted/dedicated hosts. |
+| **Ephemeral Only** | Runners are ephemeral (one job, then exit). No persistent runner state between jobs. |
+| **Single Host** | One Gale instance = one Docker host. No built-in distribution across machines. |
+| **Private Repos** | Designed for private repos where runner minutes are limited. Public repos don't need this. |
+
+---
+
 ## Features
 
 - **JIT Scaling** — Runners spawn only when jobs are queued, saving resources
