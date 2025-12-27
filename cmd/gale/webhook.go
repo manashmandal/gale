@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -340,6 +342,26 @@ waitLoop:
 		server.Shutdown(shutdownCtx)
 	}()
 
+	// Start serving in background for validation
+	serverErrCh := make(chan error, 1)
+	go func() {
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
+			serverErrCh <- err
+		}
+	}()
+
+	// Validate funnel is publicly accessible
+	fmt.Print("  • Validating public accessibility...")
+
+	healthURL := fmt.Sprintf("https://%s/health", dnsName)
+	if err := validateFunnelAccess(ctx, dnsName, healthURL); err != nil {
+		fmt.Printf(" %s✖%s\n", colorRed, colorReset)
+		fmt.Printf("    %sWarning: Could not verify public access: %v%s\n", colorYellow, err, colorReset)
+		fmt.Printf("    The funnel may still work - first request triggers certificate issuance.\n")
+	} else {
+		fmt.Printf(" %s✓%s\n", colorGreen, colorReset)
+	}
+
 	fmt.Printf("  • Funnel ready! %s✓%s\n", colorGreen, colorReset)
 	fmt.Println()
 	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
@@ -362,10 +384,68 @@ waitLoop:
 	}
 	fmt.Println()
 
-	// Serve plain HTTP - TLS is terminated by Tailscale Funnel
-	if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
+	// Wait for server error or context cancellation
+	select {
+	case err := <-serverErrCh:
 		return fmt.Errorf("server error: %w", err)
+	case <-ctx.Done():
+		return nil
+	}
+}
+
+func validateFunnelAccess(ctx context.Context, hostname, healthURL string) error {
+	// Resolve public IP via Google DNS to bypass local Tailscale resolution
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, "udp", "8.8.8.8:53")
+		},
 	}
 
-	return nil
+	ips, err := resolver.LookupIP(ctx, "ip4", hostname)
+	if err != nil || len(ips) == 0 {
+		return fmt.Errorf("DNS resolution failed: %w", err)
+	}
+	publicIP := ips[0].String()
+
+	// Create HTTP client that uses the public IP
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// Replace hostname with public IP
+				_, port, _ := net.SplitHostPort(addr)
+				return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(publicIP, port))
+			},
+			TLSClientConfig: &tls.Config{
+				ServerName: hostname,
+			},
+		},
+	}
+
+	// Retry a few times as certificate might be provisioned on first request
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		req, err := http.NewRequestWithContext(ctx, "GET", healthURL, nil)
+		if err != nil {
+			return err
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		lastErr = fmt.Errorf("unexpected status: %d", resp.StatusCode)
+		time.Sleep(2 * time.Second)
+	}
+
+	return lastErr
 }
