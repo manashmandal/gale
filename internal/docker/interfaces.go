@@ -16,6 +16,8 @@ type DockerClient interface {
 	RemoveRunner(ctx context.Context, containerID string) error
 	CleanupExitedRunners(ctx context.Context) (int, error)
 	KillTimedOutRunners(ctx context.Context, timeout time.Duration) ([]Runner, error)
+	IsContainerExited(ctx context.Context, containerID string) (bool, error)
+	StopRunner(ctx context.Context, containerID string, timeout int) error
 }
 
 // Ensure Client implements DockerClient

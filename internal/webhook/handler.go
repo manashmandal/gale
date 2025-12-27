@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/manashmandal/gale/internal/config"
 	"github.com/manashmandal/gale/internal/docker"
@@ -258,13 +259,55 @@ func (h *Handler) handleCompleted(ctx context.Context, event *WorkflowJobEvent) 
 	h.mu.Unlock()
 
 	if exists {
-		h.logger.Info("job completed, cleaning up runner",
+		h.logger.Info("job completed, initiating graceful shutdown",
 			"job_id", event.WorkflowJob.ID,
 			"container_id", containerID[:12],
 		)
-		// Runner should auto-exit (ephemeral), but cleanup just in case
-		_ = h.docker.RemoveRunner(ctx, containerID)
+		// Run graceful shutdown in background to not block webhook response
+		go h.gracefulShutdown(containerID, event.WorkflowJob.ID)
 	}
+}
+
+func (h *Handler) gracefulShutdown(containerID string, jobID int64) {
+	ctx := context.Background()
+
+	// Wait for runner to finish reporting to GitHub (ephemeral runners exit after job)
+	// Check every 2 seconds for up to 30 seconds
+	for i := 0; i < 15; i++ {
+		time.Sleep(2 * time.Second)
+		exited, err := h.docker.IsContainerExited(ctx, containerID)
+		if err != nil {
+			h.logger.Debug("error checking container status", "error", err)
+			break
+		}
+		if exited {
+			h.logger.Info("runner exited gracefully",
+				"job_id", jobID,
+				"container_id", containerID[:12],
+			)
+			_ = h.docker.RemoveRunner(ctx, containerID)
+			return
+		}
+	}
+
+	// Container still running after 30s, send SIGTERM
+	h.logger.Warn("runner did not exit, sending SIGTERM",
+		"job_id", jobID,
+		"container_id", containerID[:12],
+	)
+	if err := h.docker.StopRunner(ctx, containerID, 10); err != nil {
+		h.logger.Warn("failed to stop runner", "error", err)
+	}
+
+	// Wait another 10 seconds for graceful stop
+	time.Sleep(10 * time.Second)
+
+	// Force remove
+	h.logger.Info("removing runner container",
+		"job_id", jobID,
+		"container_id", containerID[:12],
+	)
+	_ = h.docker.RemoveRunner(ctx, containerID)
 }
 
 func (h *Handler) requiresGaleRunner(labels []string) bool {

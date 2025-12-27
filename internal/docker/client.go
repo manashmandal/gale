@@ -254,3 +254,15 @@ func (c *Client) KillTimedOutRunners(ctx context.Context, timeout time.Duration)
 	}
 	return killed, nil
 }
+
+func (c *Client) IsContainerExited(ctx context.Context, containerID string) (bool, error) {
+	info, err := c.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return false, err
+	}
+	return !info.State.Running, nil
+}
+
+func (c *Client) StopRunner(ctx context.Context, containerID string, timeout int) error {
+	return c.docker.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout})
+}
