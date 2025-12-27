@@ -39,22 +39,6 @@ checksum:
 changelog:
   use: github-native
 
-homebrew_casks:
-  - name: gale
-    binaries:
-      - gale
-    repository:
-      owner: manashmandal
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Casks
-    homepage: "https://github.com/manashmandal/gale"
-    description: "Self-hosted GitHub Actions runner manager with auto-scaling"
-    caveats: |
-      To get started:
-        gale init     # Interactive setup
-        gale start    # Start the autoscaler
-
 release:
   github:
     owner: manashmandal
