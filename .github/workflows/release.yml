@@ -13,7 +13,7 @@ on:
           - patch
   push:
     tags:
-      - '*'
+      - 'v*'
 
 permissions:
   contents: write
@@ -36,8 +36,8 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         id: calver
         run: |
-          # Generate CalVer version: YYYY.MM.DD
-          BASE_VERSION=$(date +%Y.%m.%d)
+          # Generate CalVer version: vYYYY.MM.DD (v prefix for semver compatibility)
+          BASE_VERSION="v$(date +%Y.%m.%d)"
 
           # Check if this version already exists
           EXISTING=$(git tag -l "${BASE_VERSION}*" | sort -V | tail -1)
@@ -45,7 +45,7 @@ jobs:
           if [ -z "$EXISTING" ]; then
             VERSION="${BASE_VERSION}"
           else
-            # Extract patch number if exists (e.g., 2025.01.15.1 -> 1)
+            # Extract patch number if exists (e.g., v2025.01.15.1 -> 1)
             PATCH=$(echo "$EXISTING" | sed "s/${BASE_VERSION}\.*//" | sed 's/^$/0/')
             if [ -z "$PATCH" ] || [ "$PATCH" = "$EXISTING" ]; then
               PATCH=0
