@@ -82,6 +82,17 @@ Sound familiar? You want self-hosted runners, but:
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
+```bash
+# Set GitHub token for private repo access
+export HOMEBREW_GITHUB_API_TOKEN="ghp_your_token"
+
+brew install manashmandal/tap/gale
+```
+
+See [Homebrew docs](docs/homebrew.md) for details on private repo distribution.
+
 ### From Source
 
 ```bash
@@ -183,6 +194,7 @@ flowchart TB
 | [Tailscale Funnel](docs/tailscale-funnel.md) | Zero-config public HTTPS endpoint |
 | [GitHub App](docs/github-app.md) | Using GitHub App authentication |
 | [Deployment](docs/deployment.md) | Systemd, Docker, and Kamal deployment |
+| [Homebrew](docs/homebrew.md) | Installing via Homebrew (private repo setup) |
 | [Examples](docs/examples.md) | Usage patterns and workflow examples |
 
 ---
