@@ -1,0 +1,72 @@
+version: 2
+
+project_name: gale
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: gale
+    main: ./cmd/gale
+    binary: gale
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: gale
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^style:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+homebrew_casks:
+  - name: gale
+    binaries:
+      - gale
+    repository:
+      owner: manashmandal
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/manashmandal/gale"
+    description: "Self-hosted GitHub Actions runner manager with auto-scaling"
+    caveats: |
+      To get started:
+        gale init     # Interactive setup
+        gale start    # Start the autoscaler
+
+release:
+  github:
+    owner: manashmandal
+    name: gale
+  draft: false
+  prerelease: auto
+  name_template: "{{.Tag}}"
