@@ -3,6 +3,9 @@ package github
 import (
 	"context"
 	"sync"
+	"time"
+
+	"github.com/google/go-github/v68/github"
 )
 
 type MockGitHubClient struct {
@@ -13,6 +16,15 @@ type MockGitHubClient struct {
 	GetRateLimitInfoFunc     func() (used, limit, threshold int, forceMode bool)
 	GetQueuedJobsFunc        func(ctx context.Context) ([]QueuedJob, error)
 	GetRegistrationTokenFunc func(ctx context.Context, repoFullName string) (string, error)
+	GetOwnerFunc             func() string
+
+	// Webhook functions
+	CreateRepoWebhookFunc func(ctx context.Context, owner, repo, webhookURL, secret string) (*WebhookRegistration, error)
+	CreateOrgWebhookFunc  func(ctx context.Context, org, webhookURL, secret string) (*WebhookRegistration, error)
+	ListRepoWebhooksFunc  func(ctx context.Context, owner, repo string) ([]*github.Hook, error)
+	ListOrgWebhooksFunc   func(ctx context.Context, org string) ([]*github.Hook, error)
+	DeleteRepoWebhookFunc func(ctx context.Context, owner, repo string, hookID int64) error
+	DeleteOrgWebhookFunc  func(ctx context.Context, org string, hookID int64) error
 
 	IsOrgScopeCalls           int
 	SetForceModeCalls         []bool
@@ -22,6 +34,7 @@ type MockGitHubClient struct {
 
 	orgScope           bool
 	forceMode          bool
+	owner              string
 	queuedJobs         []QueuedJob
 	rateLimitUsed      int
 	rateLimitLimit     int
@@ -33,6 +46,7 @@ func NewMockGitHubClient() *MockGitHubClient {
 		queuedJobs:         []QueuedJob{},
 		rateLimitLimit:     5000,
 		rateLimitThreshold: 2500,
+		owner:              "mock-owner",
 	}
 
 	// Set up default implementations
@@ -54,6 +68,45 @@ func NewMockGitHubClient() *MockGitHubClient {
 
 	m.GetRegistrationTokenFunc = func(ctx context.Context, repoFullName string) (string, error) {
 		return "mock-registration-token", nil
+	}
+
+	m.GetOwnerFunc = func() string {
+		return m.owner
+	}
+
+	// Default webhook implementations
+	m.CreateRepoWebhookFunc = func(ctx context.Context, owner, repo, webhookURL, secret string) (*WebhookRegistration, error) {
+		return &WebhookRegistration{
+			ID:        12345,
+			URL:       webhookURL,
+			CreatedAt: time.Now(),
+			Active:    true,
+		}, nil
+	}
+
+	m.CreateOrgWebhookFunc = func(ctx context.Context, org, webhookURL, secret string) (*WebhookRegistration, error) {
+		return &WebhookRegistration{
+			ID:        12346,
+			URL:       webhookURL,
+			CreatedAt: time.Now(),
+			Active:    true,
+		}, nil
+	}
+
+	m.ListRepoWebhooksFunc = func(ctx context.Context, owner, repo string) ([]*github.Hook, error) {
+		return []*github.Hook{}, nil
+	}
+
+	m.ListOrgWebhooksFunc = func(ctx context.Context, org string) ([]*github.Hook, error) {
+		return []*github.Hook{}, nil
+	}
+
+	m.DeleteRepoWebhookFunc = func(ctx context.Context, owner, repo string, hookID int64) error {
+		return nil
+	}
+
+	m.DeleteOrgWebhookFunc = func(ctx context.Context, org string, hookID int64) error {
+		return nil
 	}
 
 	return m
@@ -92,6 +145,34 @@ func (m *MockGitHubClient) GetRegistrationToken(ctx context.Context, repoFullNam
 	m.GetRegistrationTokenCalls = append(m.GetRegistrationTokenCalls, repoFullName)
 	m.mu.Unlock()
 	return m.GetRegistrationTokenFunc(ctx, repoFullName)
+}
+
+func (m *MockGitHubClient) GetOwner() string {
+	return m.GetOwnerFunc()
+}
+
+func (m *MockGitHubClient) CreateRepoWebhook(ctx context.Context, owner, repo, webhookURL, secret string) (*WebhookRegistration, error) {
+	return m.CreateRepoWebhookFunc(ctx, owner, repo, webhookURL, secret)
+}
+
+func (m *MockGitHubClient) CreateOrgWebhook(ctx context.Context, org, webhookURL, secret string) (*WebhookRegistration, error) {
+	return m.CreateOrgWebhookFunc(ctx, org, webhookURL, secret)
+}
+
+func (m *MockGitHubClient) ListRepoWebhooks(ctx context.Context, owner, repo string) ([]*github.Hook, error) {
+	return m.ListRepoWebhooksFunc(ctx, owner, repo)
+}
+
+func (m *MockGitHubClient) ListOrgWebhooks(ctx context.Context, org string) ([]*github.Hook, error) {
+	return m.ListOrgWebhooksFunc(ctx, org)
+}
+
+func (m *MockGitHubClient) DeleteRepoWebhook(ctx context.Context, owner, repo string, hookID int64) error {
+	return m.DeleteRepoWebhookFunc(ctx, owner, repo, hookID)
+}
+
+func (m *MockGitHubClient) DeleteOrgWebhook(ctx context.Context, org string, hookID int64) error {
+	return m.DeleteOrgWebhookFunc(ctx, org, hookID)
 }
 
 func (m *MockGitHubClient) SetOrgScope(orgScope bool) {

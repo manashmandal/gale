@@ -428,3 +428,118 @@ func (c *Client) GetRegistrationToken(ctx context.Context, repo string) (string,
 	}
 	return *token.Token, nil
 }
+
+// WebhookRegistration represents a registered webhook
+type WebhookRegistration struct {
+	ID        int64
+	URL       string
+	CreatedAt time.Time
+	Active    bool
+}
+
+// CreateRepoWebhook registers a webhook on a specific repository
+func (c *Client) CreateRepoWebhook(ctx context.Context, owner, repo, webhookURL, secret string) (*WebhookRegistration, error) {
+	hook := &github.Hook{
+		Name:   github.Ptr("web"),
+		Active: github.Ptr(true),
+		Events: []string{"workflow_job"},
+		Config: &github.HookConfig{
+			URL:         github.Ptr(webhookURL),
+			ContentType: github.Ptr("json"),
+			Secret:      github.Ptr(secret),
+			InsecureSSL: github.Ptr("0"),
+		},
+	}
+
+	c.waitForRateLimit()
+	created, resp, err := c.client.Repositories.CreateHook(ctx, owner, repo, hook)
+	c.updateRateLimit(resp)
+	if err != nil {
+		return nil, fmt.Errorf("creating repo webhook: %w", err)
+	}
+
+	return &WebhookRegistration{
+		ID:        created.GetID(),
+		URL:       created.GetURL(),
+		CreatedAt: created.GetCreatedAt().Time,
+		Active:    created.GetActive(),
+	}, nil
+}
+
+// CreateOrgWebhook registers a webhook on an organization
+func (c *Client) CreateOrgWebhook(ctx context.Context, org, webhookURL, secret string) (*WebhookRegistration, error) {
+	hook := &github.Hook{
+		Name:   github.Ptr("web"),
+		Active: github.Ptr(true),
+		Events: []string{"workflow_job"},
+		Config: &github.HookConfig{
+			URL:         github.Ptr(webhookURL),
+			ContentType: github.Ptr("json"),
+			Secret:      github.Ptr(secret),
+			InsecureSSL: github.Ptr("0"),
+		},
+	}
+
+	c.waitForRateLimit()
+	created, resp, err := c.client.Organizations.CreateHook(ctx, org, hook)
+	c.updateRateLimit(resp)
+	if err != nil {
+		return nil, fmt.Errorf("creating org webhook: %w", err)
+	}
+
+	return &WebhookRegistration{
+		ID:        created.GetID(),
+		URL:       created.GetURL(),
+		CreatedAt: created.GetCreatedAt().Time,
+		Active:    created.GetActive(),
+	}, nil
+}
+
+// ListRepoWebhooks lists all webhooks for a repository
+func (c *Client) ListRepoWebhooks(ctx context.Context, owner, repo string) ([]*github.Hook, error) {
+	c.waitForRateLimit()
+	hooks, resp, err := c.client.Repositories.ListHooks(ctx, owner, repo, &github.ListOptions{PerPage: 100})
+	c.updateRateLimit(resp)
+	if err != nil {
+		return nil, fmt.Errorf("listing repo webhooks: %w", err)
+	}
+	return hooks, nil
+}
+
+// ListOrgWebhooks lists all webhooks for an organization
+func (c *Client) ListOrgWebhooks(ctx context.Context, org string) ([]*github.Hook, error) {
+	c.waitForRateLimit()
+	hooks, resp, err := c.client.Organizations.ListHooks(ctx, org, &github.ListOptions{PerPage: 100})
+	c.updateRateLimit(resp)
+	if err != nil {
+		return nil, fmt.Errorf("listing org webhooks: %w", err)
+	}
+	return hooks, nil
+}
+
+// DeleteRepoWebhook removes a webhook from a repository
+func (c *Client) DeleteRepoWebhook(ctx context.Context, owner, repo string, hookID int64) error {
+	c.waitForRateLimit()
+	resp, err := c.client.Repositories.DeleteHook(ctx, owner, repo, hookID)
+	c.updateRateLimit(resp)
+	if err != nil {
+		return fmt.Errorf("deleting repo webhook: %w", err)
+	}
+	return nil
+}
+
+// DeleteOrgWebhook removes a webhook from an organization
+func (c *Client) DeleteOrgWebhook(ctx context.Context, org string, hookID int64) error {
+	c.waitForRateLimit()
+	resp, err := c.client.Organizations.DeleteHook(ctx, org, hookID)
+	c.updateRateLimit(resp)
+	if err != nil {
+		return fmt.Errorf("deleting org webhook: %w", err)
+	}
+	return nil
+}
+
+// GetOwner returns the owner/org configured for this client
+func (c *Client) GetOwner() string {
+	return c.owner
+}

@@ -18,8 +18,16 @@ type Config struct {
 }
 
 type WebhookConfig struct {
-	Port   int    `yaml:"port"`   // Port to listen on (default 8080)
-	Secret string `yaml:"secret"` // Webhook secret for signature verification
+	Port       int                       `yaml:"port"`                 // Port to listen on (default 8080)
+	Secret     string                    `yaml:"secret"`               // Webhook secret for signature verification
+	Registered map[string]RegisteredHook `yaml:"registered,omitempty"` // Registered webhooks (target -> hook info)
+}
+
+type RegisteredHook struct {
+	ID        int64  `yaml:"id"`
+	URL       string `yaml:"url"`
+	CreatedAt string `yaml:"created_at"`
+	Type      string `yaml:"type"` // "repo" or "org"
 }
 
 type GitHubConfig struct {
@@ -225,4 +233,46 @@ func (c *Config) GetWebhookSecret() string {
 		return os.ExpandEnv(c.GitHub.App.WebhookSecret)
 	}
 	return c.Webhook.Secret
+}
+
+// SetWebhookSecret sets the webhook secret
+func (c *Config) SetWebhookSecret(secret string) {
+	c.Webhook.Secret = secret
+}
+
+// AddRegisteredHook adds a registered webhook to the config
+func (c *Config) AddRegisteredHook(target string, hook RegisteredHook) {
+	if c.Webhook.Registered == nil {
+		c.Webhook.Registered = make(map[string]RegisteredHook)
+	}
+	c.Webhook.Registered[target] = hook
+}
+
+// RemoveRegisteredHook removes a registered webhook from the config
+func (c *Config) RemoveRegisteredHook(target string) bool {
+	if c.Webhook.Registered == nil {
+		return false
+	}
+	if _, exists := c.Webhook.Registered[target]; exists {
+		delete(c.Webhook.Registered, target)
+		return true
+	}
+	return false
+}
+
+// GetRegisteredHook returns a registered webhook by target
+func (c *Config) GetRegisteredHook(target string) (RegisteredHook, bool) {
+	if c.Webhook.Registered == nil {
+		return RegisteredHook{}, false
+	}
+	hook, exists := c.Webhook.Registered[target]
+	return hook, exists
+}
+
+// GetRegisteredHooks returns all registered webhooks
+func (c *Config) GetRegisteredHooks() map[string]RegisteredHook {
+	if c.Webhook.Registered == nil {
+		return make(map[string]RegisteredHook)
+	}
+	return c.Webhook.Registered
 }

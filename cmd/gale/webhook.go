@@ -12,10 +12,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/manashmandal/gale/internal/config"
+	"github.com/manashmandal/gale/internal/github"
+	"github.com/manashmandal/gale/internal/secret"
 	"github.com/manashmandal/gale/internal/webhook"
 	"github.com/spf13/cobra"
 	"tailscale.com/ipn/ipnstate"
@@ -67,7 +70,32 @@ var (
 	funnelHostname    string
 	webhookDaemonMode bool
 	requireSignature  bool
+	registerOnStart   string
 )
+
+func getWebhookPidFile() string {
+	return filepath.Join(getGaleDir(), "webhook.pid")
+}
+
+var webhookStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the running webhook daemon",
+	RunE:  runWebhookStop,
+}
+
+var webhookRestartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: "Restart the webhook daemon",
+	Long: `Restart the webhook daemon with the same configuration.
+
+This stops the currently running webhook daemon (if any) and starts a new one.
+All flags from the original 'webhook' command are supported.
+
+Example:
+  gale webhook restart
+  gale webhook restart --funnel`,
+	RunE: runWebhookRestart,
+}
 
 func init() {
 	webhookCmd.Flags().IntVarP(&webhookPort, "port", "p", 0, "port to listen on (default 8080)")
@@ -75,6 +103,16 @@ func init() {
 	webhookCmd.Flags().StringVar(&funnelHostname, "hostname", "", "Tailscale hostname (default: gale-<machine-hostname>)")
 	webhookCmd.Flags().BoolVarP(&webhookDaemonMode, "daemon", "d", false, "run in background (daemon mode)")
 	webhookCmd.Flags().BoolVar(&requireSignature, "require-signature", false, "require webhook signature verification (recommended for production)")
+	webhookCmd.Flags().StringVar(&registerOnStart, "register", "", "register webhook on repo before starting (requires --funnel)")
+
+	webhookRestartCmd.Flags().IntVarP(&webhookPort, "port", "p", 0, "port to listen on (default 8080)")
+	webhookRestartCmd.Flags().BoolVar(&useFunnel, "funnel", false, "use Tailscale Funnel for public HTTPS endpoint")
+	webhookRestartCmd.Flags().StringVar(&funnelHostname, "hostname", "", "Tailscale hostname (default: gale-<machine-hostname>)")
+	webhookRestartCmd.Flags().BoolVar(&requireSignature, "require-signature", false, "require webhook signature verification (recommended for production)")
+	webhookRestartCmd.Flags().StringVar(&registerOnStart, "register", "", "register webhook on repo before starting (requires --funnel)")
+
+	webhookCmd.AddCommand(webhookStopCmd)
+	webhookCmd.AddCommand(webhookRestartCmd)
 	rootCmd.AddCommand(webhookCmd)
 }
 
@@ -86,7 +124,127 @@ func getDefaultFunnelHostname() string {
 	return fmt.Sprintf("gale-%s", hostname)
 }
 
+func writeWebhookPid(pid int) error {
+	pidFile := getWebhookPidFile()
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", pid)), 0600)
+}
+
+func removeWebhookPid() {
+	os.Remove(getWebhookPidFile())
+}
+
+func getWebhookPid() (int, bool) {
+	data, err := os.ReadFile(getWebhookPidFile())
+	if err != nil {
+		return 0, false
+	}
+
+	var pid int
+	if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil {
+		return 0, false
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return 0, false
+	}
+
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		removeWebhookPid()
+		return 0, false
+	}
+
+	return pid, true
+}
+
+func stopWebhookProcess() (int, error) {
+	pid, running := getWebhookPid()
+	if !running {
+		return 0, nil
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return pid, fmt.Errorf("finding process: %w", err)
+	}
+
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		return pid, fmt.Errorf("sending signal: %w", err)
+	}
+
+	removeWebhookPid()
+	return pid, nil
+}
+
+func runWebhookStop(cmd *cobra.Command, args []string) error {
+	pid, running := getWebhookPid()
+	if !running {
+		fmt.Println("Webhook is not running")
+		return nil
+	}
+
+	if _, err := stopWebhookProcess(); err != nil {
+		return fmt.Errorf("stopping webhook: %w", err)
+	}
+
+	fmt.Printf("Webhook stopped (was PID: %d)\n", pid)
+	return nil
+}
+
+func runWebhookRestart(cmd *cobra.Command, args []string) error {
+	pid, running := getWebhookPid()
+	if running {
+		fmt.Printf("Stopping existing webhook (PID: %d)...\n", pid)
+		if _, err := stopWebhookProcess(); err != nil {
+			return fmt.Errorf("stopping existing webhook: %w", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	webhookDaemonMode = true
+	return startWebhookDaemon()
+}
+
 func startWebhookDaemon() error {
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	if logLevel != "" {
+		cfg.LogLevel = logLevel
+	}
+
+	port := cfg.Webhook.Port
+	if webhookPort > 0 {
+		port = webhookPort
+	}
+
+	hostname := funnelHostname
+	if hostname == "" {
+		hostname = getDefaultFunnelHostname()
+	}
+
+	fmt.Println()
+	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
+	fmt.Println("│  Gale Webhook Server - Starting in Daemon Mode             │")
+	fmt.Println("├─────────────────────────────────────────────────────────────┤")
+	fmt.Printf("│  Config:      %-46s │\n", cfgFile)
+	fmt.Printf("│  Log Level:   %-46s │\n", cfg.LogLevel)
+	if useFunnel {
+		fmt.Printf("│  Mode:        %-46s │\n", "Tailscale Funnel")
+		fmt.Printf("│  Hostname:    %-46s │\n", hostname)
+	} else {
+		fmt.Printf("│  Mode:        %-46s │\n", "Local Server")
+		fmt.Printf("│  Port:        %-46d │\n", port)
+	}
+	fmt.Printf("│  Log File:    %-46s │\n", GetLogFilePath())
+	fmt.Println("└─────────────────────────────────────────────────────────────┘")
+	fmt.Println()
+
 	// Build command with same args but without --daemon
 	args := []string{"webhook"}
 	if useFunnel {
@@ -111,9 +269,19 @@ func startWebhookDaemon() error {
 		return fmt.Errorf("getting executable: %w", err)
 	}
 
+	// Open log file for daemon output
+	logPath := GetLogFilePath()
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
+		return fmt.Errorf("creating log directory: %w", err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return fmt.Errorf("opening log file: %w", err)
+	}
+
 	cmd := exec.Command(exe, args...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	cmd.Stdin = nil
 
 	// Detach from parent
@@ -122,18 +290,27 @@ func startWebhookDaemon() error {
 	}
 
 	if err := cmd.Start(); err != nil {
+		logFile.Close()
 		return fmt.Errorf("starting daemon: %w", err)
 	}
 
-	fmt.Printf("Gale webhook started in background (PID: %d)\n", cmd.Process.Pid)
-	if useFunnel {
-		fmt.Printf("Note: Check logs for Tailscale Funnel URL\n")
+	if err := writeWebhookPid(cmd.Process.Pid); err != nil {
+		fmt.Printf("Warning: failed to write PID file: %v\n", err)
 	}
-	fmt.Printf("Use 'gale stop' or 'kill %d' to stop\n", cmd.Process.Pid)
+
+	fmt.Printf("Gale webhook started in background (PID: %d)\n", cmd.Process.Pid)
+	fmt.Printf("Use 'gale logs' to view logs\n")
+	fmt.Printf("Use 'gale webhook stop' to stop\n")
+	fmt.Printf("Use 'gale webhook restart' to restart\n")
 	return nil
 }
 
 func runWebhook(cmd *cobra.Command, args []string) error {
+	// Validate --register flag
+	if registerOnStart != "" && !useFunnel {
+		return fmt.Errorf("--register requires --funnel to determine the webhook URL")
+	}
+
 	// If daemon mode, fork and exit
 	if webhookDaemonMode {
 		return startWebhookDaemon()
@@ -180,6 +357,7 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 	// Graceful shutdown context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	defer removeWebhookPid()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -362,6 +540,17 @@ waitLoop:
 		fmt.Printf(" %s✓%s\n", colorGreen, colorReset)
 	}
 
+	// Register webhook if --register flag was provided
+	if registerOnStart != "" {
+		fmt.Print("  • Registering webhook on GitHub...")
+		if err := registerWebhookOnStart(ctx, cfg, funnelURL); err != nil {
+			fmt.Printf(" %s✖%s\n", colorRed, colorReset)
+			fmt.Printf("    %sWarning: %v%s\n", colorYellow, err, colorReset)
+		} else {
+			fmt.Printf(" %s✓%s\n", colorGreen, colorReset)
+		}
+	}
+
 	fmt.Printf("  • Funnel ready! %s✓%s\n", colorGreen, colorReset)
 	fmt.Println()
 	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
@@ -391,6 +580,68 @@ waitLoop:
 	case <-ctx.Done():
 		return nil
 	}
+}
+
+func registerWebhookOnStart(ctx context.Context, cfg *config.Config, webhookURL string) error {
+	if cfg.GitHub.Token == "" {
+		return fmt.Errorf("GITHUB_TOKEN or github.token is required")
+	}
+
+	webhookSecret := cfg.GetWebhookSecret()
+	if webhookSecret == "" {
+		var err error
+		webhookSecret, err = secret.GenerateWebhookSecret()
+		if err != nil {
+			return fmt.Errorf("generating secret: %w", err)
+		}
+		cfg.SetWebhookSecret(webhookSecret)
+	}
+
+	ghClient := github.NewClient(cfg.GitHub.Token, cfg.GitHub.Owner, "", cfg.GitHub.Scope)
+
+	owner := cfg.GitHub.Owner
+	repoName := registerOnStart
+	if strings.Contains(registerOnStart, "/") {
+		parts := strings.Split(registerOnStart, "/")
+		owner = parts[0]
+		repoName = parts[1]
+	}
+
+	hooks, err := ghClient.ListRepoWebhooks(ctx, owner, repoName)
+	if err != nil {
+		return fmt.Errorf("checking existing webhooks: %w", err)
+	}
+	for _, hook := range hooks {
+		if hook.Config != nil && hook.Config.GetURL() == webhookURL {
+			return nil
+		}
+	}
+
+	reg, err := ghClient.CreateRepoWebhook(ctx, owner, repoName, webhookURL, webhookSecret)
+	if err != nil {
+		if strings.Contains(err.Error(), "Hook already exists") {
+			return nil
+		}
+		return err
+	}
+
+	target := fmt.Sprintf("%s/%s", owner, repoName)
+	cfg.AddRegisteredHook(target, config.RegisteredHook{
+		ID:        reg.ID,
+		URL:       webhookURL,
+		CreatedAt: reg.CreatedAt.Format(time.RFC3339),
+		Type:      "repo",
+	})
+
+	if !cfg.IsRepoMonitored(repoName) {
+		cfg.AddRepo(repoName)
+	}
+
+	if err := cfg.Save(cfgFile); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	return nil
 }
 
 func validateFunnelAccess(ctx context.Context, hostname, healthURL string) error {

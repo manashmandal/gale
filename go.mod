@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/docker/docker v28.5.2+incompatible
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/go-github/v68 v68.0.0
 	github.com/google/uuid v1.6.0

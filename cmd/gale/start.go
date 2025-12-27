@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/manashmandal/gale/internal/config"
@@ -21,6 +23,18 @@ var (
 	pidFile        string
 	defaultPidFile = "/tmp/gale.pid"
 )
+
+func getGaleDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "/tmp/gale"
+	}
+	return filepath.Join(homeDir, ".gale")
+}
+
+func GetLogFilePath() string {
+	return filepath.Join(getGaleDir(), "gale.log")
+}
 
 var startCmd = &cobra.Command{
 	Use:   "start",
@@ -189,6 +203,39 @@ func runStop(cmd *cobra.Command, args []string) error {
 }
 
 func setupLogger(level string) *slog.Logger {
+	return setupLoggerWithOutput(level, os.Stdout)
+}
+
+func setupLoggerWithFile(level string) (*slog.Logger, *os.File, error) {
+	logPath := GetLogFilePath()
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
+		return nil, nil, fmt.Errorf("creating log directory: %w", err)
+	}
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening log file: %w", err)
+	}
+
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+	return setupLoggerWithOutput(level, multiWriter), logFile, nil
+}
+
+func setupDaemonLogger(level string) (*slog.Logger, *os.File, error) {
+	logPath := GetLogFilePath()
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
+		return nil, nil, fmt.Errorf("creating log directory: %w", err)
+	}
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening log file: %w", err)
+	}
+
+	return setupLoggerWithOutput(level, logFile), logFile, nil
+}
+
+func setupLoggerWithOutput(level string, w io.Writer) *slog.Logger {
 	var logLevel slog.Level
 	switch level {
 	case "debug":
@@ -201,7 +248,7 @@ func setupLogger(level string) *slog.Logger {
 		logLevel = slog.LevelInfo
 	}
 
-	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
 		Level: logLevel,
 	}))
 }
