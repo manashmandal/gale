@@ -172,7 +172,10 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 	// Check if this repo is monitored
 	repoName := extractRepoName(event.Repository.FullName)
 	if !h.cfg.IsRepoMonitored(repoName) {
-		h.logger.Debug("repo not in monitored list", "repo", repoName, "monitored", h.cfg.GetRepos())
+		h.logger.Warn("received webhook for unregistered repo, ignoring",
+			"repo", event.Repository.FullName,
+			"hint", "use 'gale webhook register' or 'gale repo add' to monitor this repo",
+		)
 		return
 	}
 
