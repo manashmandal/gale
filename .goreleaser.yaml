@@ -37,15 +37,7 @@ checksum:
   name_template: "checksums.txt"
 
 changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^style:"
-      - "^chore:"
-      - Merge pull request
-      - Merge branch
+  use: github-native
 
 homebrew_casks:
   - name: gale
@@ -69,4 +61,5 @@ release:
     name: gale
   draft: false
   prerelease: auto
-  name_template: "{{.Tag}}"
+  make_latest: true
+  name_template: "Release {{.Tag}}"
