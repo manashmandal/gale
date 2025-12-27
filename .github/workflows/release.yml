@@ -36,20 +36,19 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         id: calver
         run: |
-          # Generate CalVer version: vYYYY.MM.DD (v prefix for semver compatibility)
-          BASE_VERSION="v$(date +%Y.%m.%d)"
+          # Generate CalVer version: vYYYY.MMDD.PATCH (semver compatible: 3 parts)
+          YEAR=$(date +%Y)
+          MMDD=$(date +%m%d)
+          BASE_VERSION="v${YEAR}.${MMDD}"
 
-          # Check if this version already exists
-          EXISTING=$(git tag -l "${BASE_VERSION}*" | sort -V | tail -1)
+          # Check if this version already exists and find next patch
+          EXISTING=$(git tag -l "${BASE_VERSION}.*" | sort -V | tail -1)
 
           if [ -z "$EXISTING" ]; then
-            VERSION="${BASE_VERSION}"
+            VERSION="${BASE_VERSION}.0"
           else
-            # Extract patch number if exists (e.g., v2025.01.15.1 -> 1)
-            PATCH=$(echo "$EXISTING" | sed "s/${BASE_VERSION}\.*//" | sed 's/^$/0/')
-            if [ -z "$PATCH" ] || [ "$PATCH" = "$EXISTING" ]; then
-              PATCH=0
-            fi
+            # Extract patch number (e.g., v2025.1227.1 -> 1)
+            PATCH=$(echo "$EXISTING" | sed "s/${BASE_VERSION}\.//" | sed 's/^$/0/')
             NEXT_PATCH=$((PATCH + 1))
             VERSION="${BASE_VERSION}.${NEXT_PATCH}"
           fi
