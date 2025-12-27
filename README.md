@@ -5,7 +5,8 @@
 <h1 align="center">Gale</h1>
 
 <p align="center">
-  <strong>Just-In-Time Autoscaler for GitHub Actions Self-Hosted Runners</strong>
+  <strong>Just-In-Time Autoscaler for GitHub Actions Self-Hosted Runners</strong><br>
+  <em>(For private repositories)</em>
 </p>
 
 <p align="center">
@@ -23,17 +24,20 @@
 ## TL;DR
 
 ```bash
-# Install
+# Install via Homebrew (macOS/Linux)
+brew install manashmandal/tap/gale
+
+# Or build from source
 git clone https://github.com/manashmandal/gale.git && cd gale
 go build -o bin/gale ./cmd/gale
 
 # Setup (interactive)
-./bin/gale init
+gale init
 
 # Run (pick one)
-./bin/gale start                    # Polling mode
-./bin/gale webhook                  # Webhook mode (local)
-./bin/gale webhook --funnel         # Webhook + Tailscale Funnel (zero-config HTTPS)
+gale start                    # Polling mode
+gale webhook                  # Webhook mode (local)
+gale webhook --funnel         # Webhook + Tailscale Funnel (zero-config HTTPS)
 ```
 
 Then use `runs-on: gale` in your workflows. Done.
@@ -52,6 +56,12 @@ Sound familiar? You want self-hosted runners, but:
 - **Always-on runners?** Your electricity bill called, it's concerned
 
 **Gale is for the rest of us.** One binary. Docker. That mass of compute power under your desk finally doing something useful.
+
+### Real-World Benefits
+
+- **Private repo runner quota exhausted?** GitHub gives limited free minutes for private repos. Gale lets you run unlimited jobs on your own hardware.
+
+- **Faster builds on modest hardware.** A 2019 Dell XPS 15 7590 with 64GB RAM and a 1Gbps internet connection runs workflows in ~1 minute that take 3-5 minutes on GitHub-hosted runners. Your old laptop can outperform the cloud.
 
 ---
 
