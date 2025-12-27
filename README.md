@@ -103,7 +103,7 @@ go build -o bin/gale ./cmd/gale
 
 ### Requirements
 
-- Go 1.21+
+- Go 1.25+
 - Docker
 - GitHub Personal Access Token with `repo` scope (or GitHub App)
 
