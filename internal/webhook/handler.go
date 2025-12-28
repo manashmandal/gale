@@ -17,6 +17,7 @@ import (
 	"github.com/manashmandal/gale/internal/config"
 	"github.com/manashmandal/gale/internal/docker"
 	"github.com/manashmandal/gale/internal/github"
+	"github.com/manashmandal/gale/internal/runner"
 )
 
 // WorkflowJobEvent represents GitHub's workflow_job webhook payload
@@ -41,20 +42,22 @@ type WorkflowJobEvent struct {
 }
 
 type Handler struct {
-	cfg       *config.Config
-	docker    docker.DockerClient
-	appClient *github.AppClient // nil if using PAT mode
-	logger    *slog.Logger
-	secret    string
+	cfg          *config.Config
+	runner       runner.Client
+	docker       docker.DockerClient // Deprecated: for backward compatibility with tests
+	appClient    *github.AppClient   // nil if using PAT mode
+	logger       *slog.Logger
+	secret       string
 
 	mu            sync.Mutex
-	activeRunners map[int64]string // jobID -> containerID
+	activeRunners map[int64]string // jobID -> runnerID (containerID or native runner ID)
 
 	cleanupDone chan struct{}
 }
 
 type HandlerOptions struct {
-	DockerClient docker.DockerClient
+	DockerClient docker.DockerClient // Deprecated: use RunnerClient
+	RunnerClient runner.Client
 }
 
 func NewHandler(cfg *config.Config, logger *slog.Logger) (*Handler, error) {
@@ -62,34 +65,38 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (*Handler, error) {
 }
 
 func NewHandlerWithOptions(cfg *config.Config, logger *slog.Logger, opts HandlerOptions) (*Handler, error) {
-	var dockerClient docker.DockerClient
+	var runnerClient runner.Client
 	var err error
 
-	if opts.DockerClient != nil {
-		dockerClient = opts.DockerClient
+	if opts.RunnerClient != nil {
+		runnerClient = opts.RunnerClient
+	} else if opts.DockerClient != nil {
+		// Backward compatibility: wrap docker client
+		runnerClient = runner.NewDockerAdapter(opts.DockerClient)
 	} else {
-		dockerClient, err = docker.NewClient(cfg.Docker.Host)
+		// Create runner client based on config mode
+		runnerClient, err = runner.NewClient(cfg, logger)
 		if err != nil {
-			return nil, fmt.Errorf("creating docker client: %w", err)
+			return nil, fmt.Errorf("creating runner client: %w", err)
 		}
 	}
 
-	return NewHandlerWithDocker(cfg, logger, dockerClient)
+	return NewHandlerWithRunner(cfg, logger, runnerClient)
 }
 
+// NewHandlerWithDocker creates a handler with a specific Docker client (for backward compatibility)
 func NewHandlerWithDocker(cfg *config.Config, logger *slog.Logger, dockerClient docker.DockerClient) (*Handler, error) {
+	runnerClient := runner.NewDockerAdapter(dockerClient)
+	return NewHandlerWithRunner(cfg, logger, runnerClient)
+}
+
+func NewHandlerWithRunner(cfg *config.Config, logger *slog.Logger, runnerClient runner.Client) (*Handler, error) {
 	h := &Handler{
 		cfg:           cfg,
-		docker:        dockerClient,
+		runner:        runnerClient,
 		logger:        logger,
 		secret:        cfg.GetWebhookSecret(),
 		activeRunners: make(map[int64]string),
-	}
-
-	// Ensure runner image is available (pull if needed)
-	logger.Info("ensuring runner image is available", "image", cfg.Runner.Image)
-	if err := dockerClient.EnsureImage(context.Background(), cfg.Runner.Image); err != nil {
-		return nil, fmt.Errorf("ensuring runner image: %w", err)
 	}
 
 	// Initialize GitHub App client if in app mode
@@ -117,7 +124,7 @@ func (h *Handler) Close() error {
 	if h.cleanupDone != nil {
 		close(h.cleanupDone)
 	}
-	return h.docker.Close()
+	return h.runner.Close()
 }
 
 func (h *Handler) StartCleanup(ctx context.Context) {
@@ -147,13 +154,13 @@ func (h *Handler) cleanupLoop(ctx context.Context) {
 }
 
 func (h *Handler) cleanupExitedContainers() {
-	cleaned, err := h.docker.CleanupExitedRunners(context.Background())
+	cleaned, err := h.runner.CleanupExitedRunners(context.Background())
 	if err != nil {
 		h.logger.Debug("cleanup error", "error", err)
 		return
 	}
 	if cleaned > 0 {
-		h.logger.Info("cleaned up exited containers", "count", cleaned)
+		h.logger.Info("cleaned up exited runners", "count", cleaned)
 	}
 }
 
@@ -275,7 +282,7 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 	}
 
 	// Spawn runner - use background context to avoid cancellation from HTTP timeout
-	runnerCfg := docker.RunnerConfig{
+	runnerCfg := runner.Config{
 		Image:       h.cfg.Runner.Image,
 		Token:       token,
 		RepoURL:     event.Repository.HTMLURL,
@@ -285,28 +292,31 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 		Scope:       "repo",
 	}
 
-	runner, err := h.docker.CreateRunner(context.Background(), runnerCfg)
+	r, err := h.runner.CreateRunner(context.Background(), runnerCfg)
 	if err != nil {
 		h.logger.Error("failed to create runner", "error", err)
 		h.releaseSlot(event.WorkflowJob.ID)
 		return
 	}
 
-	// Update slot with actual container ID
+	// Update slot with actual runner ID (containerID for Docker, runnerID for native)
+	runnerID := r.ContainerID
+	if runnerID == "" {
+		runnerID = r.ID
+	}
 	h.mu.Lock()
-	h.activeRunners[event.WorkflowJob.ID] = runner.ContainerID
+	h.activeRunners[event.WorkflowJob.ID] = runnerID
 	h.mu.Unlock()
 
 	h.logger.Info("spawned runner for job",
 		"job_id", event.WorkflowJob.ID,
 		"job_name", event.WorkflowJob.Name,
-		"runner_id", runner.ID,
-		"container_id", runner.ContainerID[:12],
+		"runner_id", r.ID,
 		"repo", event.Repository.FullName,
 	)
 
-	// Monitor for early container exit (indicates registration failure)
-	go h.monitorRunnerStartup(runner.ContainerID, event.WorkflowJob.ID, event.WorkflowJob.Name)
+	// Monitor for early runner exit (indicates registration failure)
+	go h.monitorRunnerStartup(runnerID, event.WorkflowJob.ID, event.WorkflowJob.Name)
 }
 
 func (h *Handler) releaseSlot(jobID int64) {
@@ -315,21 +325,24 @@ func (h *Handler) releaseSlot(jobID int64) {
 	h.mu.Unlock()
 }
 
-func (h *Handler) monitorRunnerStartup(containerID string, jobID int64, jobName string) {
+func (h *Handler) monitorRunnerStartup(runnerID string, jobID int64, jobName string) {
 	// Wait a few seconds for runner to register
 	time.Sleep(5 * time.Second)
 
-	exited, err := h.docker.IsContainerExited(context.Background(), containerID)
+	if h.runner == nil {
+		return // Handler was closed
+	}
+
+	exited, err := h.runner.IsRunnerExited(context.Background(), runnerID)
 	if err != nil {
-		return // Container may have been removed already
+		return // Runner may have been removed already
 	}
 
 	if exited {
-		h.logger.Error("runner container exited immediately - likely token/permission issue",
+		h.logger.Error("runner exited immediately - likely token/permission issue",
 			"job_id", jobID,
 			"job_name", jobName,
-			"container_id", containerID[:12],
-			"hint", "Check container logs with: docker logs "+containerID[:12],
+			"runner_id", runnerID,
 			"common_causes", "GitHub App needs 'Administration: Read & Write' permission, or PAT needs 'repo' and 'admin:org' scopes",
 		)
 	}
@@ -337,7 +350,7 @@ func (h *Handler) monitorRunnerStartup(containerID string, jobID int64, jobName 
 
 func (h *Handler) handleCompleted(ctx context.Context, event *WorkflowJobEvent) {
 	h.mu.Lock()
-	containerID, exists := h.activeRunners[event.WorkflowJob.ID]
+	runnerID, exists := h.activeRunners[event.WorkflowJob.ID]
 	if exists {
 		delete(h.activeRunners, event.WorkflowJob.ID)
 	}
@@ -346,53 +359,68 @@ func (h *Handler) handleCompleted(ctx context.Context, event *WorkflowJobEvent) 
 	if exists {
 		h.logger.Info("job completed, initiating graceful shutdown",
 			"job_id", event.WorkflowJob.ID,
-			"container_id", containerID[:12],
+			"runner_id", runnerID,
 		)
 		// Run graceful shutdown in background to not block webhook response
-		go h.gracefulShutdown(containerID, event.WorkflowJob.ID)
+		go h.gracefulShutdown(runnerID, event.WorkflowJob.ID)
 	}
 }
 
-func (h *Handler) gracefulShutdown(containerID string, jobID int64) {
+func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 	ctx := context.Background()
+
+	if h.runner == nil {
+		return // Handler was closed
+	}
 
 	// Wait for runner to finish reporting to GitHub (ephemeral runners exit after job)
 	// Check every 2 seconds for up to 30 seconds
 	for i := 0; i < 15; i++ {
 		time.Sleep(2 * time.Second)
-		exited, err := h.docker.IsContainerExited(ctx, containerID)
+		if h.runner == nil {
+			return // Handler was closed
+		}
+		exited, err := h.runner.IsRunnerExited(ctx, runnerID)
 		if err != nil {
-			h.logger.Debug("error checking container status", "error", err)
+			h.logger.Debug("error checking runner status", "error", err)
 			break
 		}
 		if exited {
 			h.logger.Info("runner exited gracefully",
 				"job_id", jobID,
-				"container_id", containerID[:12],
+				"runner_id", runnerID,
 			)
-			_ = h.docker.RemoveRunner(ctx, containerID)
+			_ = h.runner.RemoveRunner(ctx, runnerID)
 			return
 		}
 	}
 
-	// Container still running after 30s, send SIGTERM
+	if h.runner == nil {
+		return // Handler was closed
+	}
+
+	// Runner still running after 30s, send SIGTERM
 	h.logger.Warn("runner did not exit, sending SIGTERM",
 		"job_id", jobID,
-		"container_id", containerID[:12],
+		"runner_id", runnerID,
 	)
-	if err := h.docker.StopRunner(ctx, containerID, 10); err != nil {
+	if err := h.runner.StopRunner(ctx, runnerID, 10); err != nil {
 		h.logger.Warn("failed to stop runner", "error", err)
 	}
 
 	// Wait another 10 seconds for graceful stop
 	time.Sleep(10 * time.Second)
 
+	if h.runner == nil {
+		return // Handler was closed
+	}
+
 	// Force remove
-	h.logger.Info("removing runner container",
+	h.logger.Info("removing runner",
 		"job_id", jobID,
-		"container_id", containerID[:12],
+		"runner_id", runnerID,
 	)
-	_ = h.docker.RemoveRunner(ctx, containerID)
+	_ = h.runner.RemoveRunner(ctx, runnerID)
 }
 
 func (h *Handler) requiresGaleRunner(jobLabels []string) bool {

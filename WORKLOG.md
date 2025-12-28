@@ -1,5 +1,40 @@
 # Work Log
 
+## 2025-12-28 04:30 UTC - Native Runner Mode for macOS
+
+### Feature
+Added native runner mode that spawns GitHub Actions runners as native processes instead of Docker containers. This enables true macOS runners for Xcode, iOS builds, etc.
+
+### Architecture
+- Created `internal/runner/` package with unified `Client` interface
+- Both Docker and Native backends implement the same interface
+- `internal/native/client.go` - Native runner implementation
+  - Downloads and caches official GitHub Actions runner binary
+  - Configures runner with `--ephemeral` mode
+  - Manages runner process lifecycle
+
+### Configuration
+```yaml
+runner:
+  mode: native  # "docker" or "native" (default: docker)
+```
+
+### Files Created
+- `internal/runner/interface.go` - Unified runner interface
+- `internal/runner/factory.go` - Client factory
+- `internal/runner/docker_adapter.go` - Docker backend
+- `internal/runner/native_adapter.go` - Native backend
+- `internal/native/client.go` - Native runner implementation
+
+### Files Modified
+- `internal/config/config.go` - Added `runner.mode` field
+- `internal/webhook/handler.go` - Use unified runner interface
+- `internal/webhook/handler_test.go` - Updated tests
+- `docs/configuration.md` - Added Runner Mode section
+- `README.md` - Updated macOS support info
+
+---
+
 ## 2025-12-28 03:45 UTC - macOS Runner Clarification
 
 ### Issue

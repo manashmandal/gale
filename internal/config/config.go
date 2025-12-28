@@ -65,11 +65,12 @@ type ScalerConfig struct {
 }
 
 type RunnerConfig struct {
-	Image       string            `yaml:"image"`
+	Mode        string            `yaml:"mode"`         // "docker" or "native" (default: docker)
+	Image       string            `yaml:"image"`        // Docker image (docker mode only)
 	Labels      []string          `yaml:"labels"`
 	Env         map[string]string `yaml:"env"`
-	NetworkMode string            `yaml:"network_mode"`
-	Timeout     time.Duration     `yaml:"timeout"` // Max runner lifetime (default: 0 = no timeout)
+	NetworkMode string            `yaml:"network_mode"` // Docker network mode (docker mode only)
+	Timeout     time.Duration     `yaml:"timeout"`      // Max runner lifetime (default: 0 = no timeout)
 }
 
 func Load(path string) (*Config, error) {
@@ -132,6 +133,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Webhook.Port == 0 {
 		c.Webhook.Port = 8080
+	}
+	if c.Runner.Mode == "" {
+		c.Runner.Mode = "docker"
 	}
 	if c.Runner.Image == "" {
 		c.Runner.Image = "myoung34/github-runner:latest"

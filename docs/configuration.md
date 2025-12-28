@@ -44,14 +44,15 @@ scaler:
   scale_up_delay: 5s          # Throttle between scale-up operations
 
 runner:
-  image: myoung34/github-runner:latest
+  mode: docker                # "docker" or "native" (default: docker)
+  image: myoung34/github-runner:latest  # Docker image (docker mode only)
   labels:
     - self-hosted
     - linux
     - x64
     - docker
   env: {}                     # Additional environment variables
-  network_mode: ""            # Docker network mode (e.g., "host", "bridge")
+  network_mode: ""            # Docker network mode (docker mode only)
   timeout: 30m                # Max runner lifetime (0 = no timeout)
 
 webhook:
@@ -172,3 +173,43 @@ jobs:
     runs-on: gale
     timeout-minutes: 15    # GitHub cancels job after 15 minutes
 ```
+
+## Runner Mode
+
+The `runner.mode` setting determines how runners are spawned:
+
+### Docker Mode (default)
+
+```yaml
+runner:
+  mode: docker
+  image: myoung34/github-runner:latest
+```
+
+- Runners are spawned as Docker containers
+- Works on any system with Docker installed
+- Containers run Linux regardless of host OS
+- Best for CI/CD isolation and reproducibility
+
+### Native Mode
+
+```yaml
+runner:
+  mode: native
+```
+
+- Runners are spawned as native processes
+- Downloads and runs the official GitHub Actions runner binary
+- Supports macOS (arm64/x64) and Linux (x64/arm64)
+- No Docker required
+- Runners execute directly on the host OS
+
+**Use native mode when:**
+- You need true macOS runners (Xcode, iOS builds)
+- Docker is not available or desired
+- You want runners to use host resources directly
+
+**Caveats:**
+- Less isolation than Docker mode
+- Runner binaries are cached in `~/.gale/native-runners/`
+- Cleanup of work directories is automatic

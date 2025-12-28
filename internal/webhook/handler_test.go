@@ -17,7 +17,18 @@ import (
 
 	"github.com/manashmandal/gale/internal/config"
 	"github.com/manashmandal/gale/internal/docker"
+	"github.com/manashmandal/gale/internal/runner"
 )
+
+func createTestHandler(cfg *config.Config, mockDocker *docker.MockClient) *Handler {
+	return &Handler{
+		cfg:           cfg,
+		runner:        runner.NewDockerAdapter(mockDocker),
+		docker:        mockDocker,
+		logger:        testLogger(),
+		activeRunners: make(map[int64]string),
+	}
+}
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -1133,6 +1144,7 @@ func TestHandleQueued_NoInstallationIDInAppMode(t *testing.T) {
 	mockDocker := docker.NewMockClient()
 	h := &Handler{
 		cfg:           cfg,
+		runner:        runner.NewDockerAdapter(mockDocker),
 		docker:        mockDocker,
 		logger:        testLogger(),
 		activeRunners: make(map[int64]string),
@@ -1276,6 +1288,7 @@ func TestMonitorRunnerStartup_ContainerExited(t *testing.T) {
 	}
 
 	h := &Handler{
+		runner: runner.NewDockerAdapter(mockDocker),
 		docker: mockDocker,
 		logger: testLogger(),
 	}
@@ -1308,6 +1321,7 @@ func TestMonitorRunnerStartup_ContainerRunning(t *testing.T) {
 	}
 
 	h := &Handler{
+		runner: runner.NewDockerAdapter(mockDocker),
 		docker: mockDocker,
 		logger: testLogger(),
 	}
@@ -1337,6 +1351,7 @@ func TestMonitorRunnerStartup_CheckError(t *testing.T) {
 	}
 
 	h := &Handler{
+		runner: runner.NewDockerAdapter(mockDocker),
 		docker: mockDocker,
 		logger: testLogger(),
 	}
