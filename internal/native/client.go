@@ -197,6 +197,11 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		runCmd.Env = append(runCmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
+	// Run in its own process group to prevent signal interference from parent
+	runCmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+
 	if err := runCmd.Start(); err != nil {
 		os.RemoveAll(runnerDir)
 		return nil, fmt.Errorf("starting runner: %w", err)
