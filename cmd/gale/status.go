@@ -125,11 +125,22 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 func printJobs(jobs []github.QueuedJob) {
 	if len(jobs) == 0 {
-		fmt.Println("No queued jobs")
+		fmt.Println("No active jobs")
 		return
 	}
 
-	fmt.Printf("Queued jobs: %d\n\n", len(jobs))
+	// Count by status
+	queued := 0
+	inProgress := 0
+	for _, j := range jobs {
+		if j.Status == "in_progress" {
+			inProgress++
+		} else {
+			queued++
+		}
+	}
+
+	fmt.Printf("Active jobs: %d (queued: %d, in_progress: %d)\n\n", len(jobs), queued, inProgress)
 
 	// Group by repo
 	byRepo := make(map[string][]github.QueuedJob)

@@ -272,23 +272,29 @@ func (c *Client) getRepoQueuedJobs(ctx context.Context, owner, repo string) ([]Q
 		}
 
 		for _, job := range jobs.Jobs {
-			if job.Status != nil && (*job.Status == "queued" || *job.Status == "waiting") {
-				// Check if job requires self-hosted runner
-				if !c.requiresSelfHosted(job) {
-					continue
-				}
-
-				qj := QueuedJob{
-					RunID:  *run.ID,
-					JobID:  *job.ID,
-					Status: *job.Status,
-					Repo:   repoFullName,
-				}
-				if job.Name != nil {
-					qj.JobName = *job.Name
-				}
-				queuedJobs = append(queuedJobs, qj)
+			if job.Status == nil {
+				continue
 			}
+			status := *job.Status
+			// Include queued, waiting, and in_progress jobs for visibility
+			if status != "queued" && status != "waiting" && status != "in_progress" {
+				continue
+			}
+			// Check if job requires self-hosted runner
+			if !c.requiresSelfHosted(job) {
+				continue
+			}
+
+			qj := QueuedJob{
+				RunID:  *run.ID,
+				JobID:  *job.ID,
+				Status: status,
+				Repo:   repoFullName,
+			}
+			if job.Name != nil {
+				qj.JobName = *job.Name
+			}
+			queuedJobs = append(queuedJobs, qj)
 		}
 	}
 

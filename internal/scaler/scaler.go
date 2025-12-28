@@ -163,12 +163,21 @@ func (s *Scaler) reconcile(ctx context.Context) {
 	}
 
 	// Get current state
-	queuedJobs, err := s.gh.GetQueuedJobs(ctx)
+	allJobs, err := s.gh.GetQueuedJobs(ctx)
 	if err != nil {
 		s.logger.Error("failed to get queued jobs", "error", err)
 		// Still maintain minimum runners even if we can't fetch jobs
 		s.ensureMinRunners(ctx)
 		return
+	}
+
+	// Filter to only queued/waiting jobs for scaling decisions
+	// (in_progress jobs already have runners assigned)
+	var queuedJobs []github.QueuedJob
+	for _, job := range allJobs {
+		if job.Status == "queued" || job.Status == "waiting" {
+			queuedJobs = append(queuedJobs, job)
+		}
 	}
 
 	activeRunners, err := s.docker.GetActiveRunnerCount(ctx)
@@ -312,9 +321,17 @@ func (s *Scaler) scaleUp(ctx context.Context, count int, jobs []github.QueuedJob
 }
 
 func (s *Scaler) GetStats(ctx context.Context) (*Stats, error) {
-	queuedJobs, err := s.gh.GetQueuedJobs(ctx)
+	allJobs, err := s.gh.GetQueuedJobs(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Count only actually queued jobs (not in_progress)
+	queuedCount := 0
+	for _, job := range allJobs {
+		if job.Status == "queued" || job.Status == "waiting" {
+			queuedCount++
+		}
 	}
 
 	activeRunners, err := s.docker.GetActiveRunnerCount(ctx)
@@ -325,7 +342,7 @@ func (s *Scaler) GetStats(ctx context.Context) (*Stats, error) {
 	used, limit, threshold, _ := s.gh.GetRateLimitInfo()
 
 	return &Stats{
-		QueuedJobs:      len(queuedJobs),
+		QueuedJobs:      queuedCount,
 		ActiveRunners:   activeRunners,
 		MaxRunners:      s.cfg.Scaler.MaxRunners,
 		MinRunners:      s.cfg.Scaler.MinRunners,
