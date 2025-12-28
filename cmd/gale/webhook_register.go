@@ -10,6 +10,7 @@ import (
 	"github.com/manashmandal/gale/internal/github"
 	"github.com/manashmandal/gale/internal/secret"
 	"github.com/spf13/cobra"
+	"tailscale.com/client/tailscale"
 )
 
 var (
@@ -85,14 +86,16 @@ func runWebhookRegister(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("GITHUB_TOKEN or github.token is required for webhook registration")
 	}
 
+	ctx := context.Background()
+
 	webhookURL := registerURL
 	if webhookURL == "" {
-		hostname := funnelHostname
-		if hostname == "" {
-			hostname = getDefaultFunnelHostname()
+		dnsName, err := getTailscaleDNSName(ctx)
+		if err != nil {
+			return fmt.Errorf("detecting Tailscale URL: %w\n\nUse --url to specify the webhook URL manually", err)
 		}
-		webhookURL = fmt.Sprintf("https://%s.ts.net/webhook", hostname)
-		fmt.Printf("Using detected Tailscale Funnel URL: %s\n", webhookURL)
+		webhookURL = fmt.Sprintf("https://%s/webhook", dnsName)
+		fmt.Printf("Using Tailscale Funnel URL: %s\n", webhookURL)
 	}
 
 	if !strings.HasSuffix(webhookURL, "/webhook") {
@@ -110,7 +113,6 @@ func runWebhookRegister(cmd *cobra.Command, args []string) error {
 	}
 
 	ghClient := github.NewClient(cfg.GitHub.Token, cfg.GitHub.Owner, "", cfg.GitHub.Scope)
-	ctx := context.Background()
 
 	if registerOrg {
 		return registerOrgWebhook(ctx, cfg, ghClient, webhookURL, webhookSecret)
@@ -303,4 +305,26 @@ func runWebhookUnregister(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Webhook unregistered from %s (ID: %d)\n", target, hook.ID)
 	return nil
+}
+
+func getTailscaleDNSName(ctx context.Context) (string, error) {
+	lc := tailscale.LocalClient{}
+	status, err := lc.Status(ctx)
+	if err != nil {
+		return "", fmt.Errorf("querying Tailscale status: %w (is Tailscale running?)", err)
+	}
+
+	if status.Self == nil {
+		return "", fmt.Errorf("Tailscale not connected")
+	}
+
+	dnsName := status.Self.DNSName
+	if dnsName == "" {
+		return "", fmt.Errorf("no DNS name assigned - ensure Tailscale is properly configured")
+	}
+
+	// Remove trailing dot from DNS name
+	dnsName = strings.TrimSuffix(dnsName, ".")
+
+	return dnsName, nil
 }
