@@ -256,7 +256,7 @@ func startWebhookDaemon() error {
 	if webhookPort > 0 {
 		args = append(args, "--port", fmt.Sprintf("%d", webhookPort))
 	}
-	if cfgFile != "config.yaml" {
+	if cfgFile != getDefaultConfigPath() {
 		args = append(args, "--config", cfgFile)
 	}
 	if logLevel != "" {

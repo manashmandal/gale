@@ -8,7 +8,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const CurrentConfigVersion = "1"
+
 type Config struct {
+	Version  string        `yaml:"version"`
 	GitHub   GitHubConfig  `yaml:"github"`
 	Docker   DockerConfig  `yaml:"docker"`
 	Scaler   ScalerConfig  `yaml:"scaler"`
@@ -83,6 +86,11 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
+	// Apply migrations for older config versions
+	if err := cfg.migrate(); err != nil {
+		return nil, fmt.Errorf("migrating config: %w", err)
+	}
+
 	cfg.setDefaults()
 	return &cfg, nil
 }
@@ -105,6 +113,11 @@ func (c *Config) Save(path string) error {
 }
 
 func (c *Config) setDefaults() {
+	// Set version if not present (pre-versioned config)
+	if c.Version == "" {
+		c.Version = CurrentConfigVersion
+	}
+
 	if c.Docker.Host == "" {
 		c.Docker.Host = "unix:///var/run/docker.sock"
 	}
@@ -144,6 +157,41 @@ func (c *Config) setDefaults() {
 			c.GitHub.Scope = "repos"
 		}
 	}
+}
+
+// migrate applies any necessary migrations based on config version
+func (c *Config) migrate() error {
+	// Handle pre-versioned configs (version == "")
+	if c.Version == "" {
+		// This is a pre-versioned config, apply all migrations
+		c.Version = "0"
+	}
+
+	// Migration chain: apply migrations sequentially
+	switch c.Version {
+	case "0":
+		// Migrate from version 0 (pre-versioned) to version 1
+		// - Single repo field migrated to repos list (handled in setDefaults)
+		c.Version = "1"
+		fallthrough
+	case CurrentConfigVersion:
+		// Current version (1), no migration needed
+		// Future migrations will be added here:
+		// case "1":
+		//     // Migrate from v1 to v2
+		//     c.Version = "2"
+		//     fallthrough
+		// case "2":
+		//     // Current version
+		return nil
+	default:
+		// Unknown version - could be from a newer gale version
+		if c.Version > CurrentConfigVersion {
+			return fmt.Errorf("config version %s is newer than supported version %s; please upgrade gale", c.Version, CurrentConfigVersion)
+		}
+	}
+
+	return nil
 }
 
 func (c *Config) IsOrgScope() bool {

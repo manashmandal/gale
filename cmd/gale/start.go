@@ -98,7 +98,7 @@ func startDaemon() error {
 	if forceMode {
 		args = append(args, "--force")
 	}
-	if cfgFile != "config.yaml" {
+	if cfgFile != getDefaultConfigPath() {
 		args = append(args, "--config", cfgFile)
 	}
 	if logLevel != "" {
