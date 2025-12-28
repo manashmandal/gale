@@ -1117,3 +1117,105 @@ func TestWaitForRateLimit_RecentCallsArePreserved(t *testing.T) {
 		t.Errorf("recent callTimes should be preserved, got %d entries", len(c.callTimes))
 	}
 }
+
+func TestMockGitHubClient_GetOwner(t *testing.T) {
+	mock := NewMockGitHubClient()
+
+	owner := mock.GetOwner()
+	if owner != "mock-owner" {
+		t.Errorf("GetOwner() = %q, want mock-owner", owner)
+	}
+}
+
+func TestMockGitHubClient_CreateRepoWebhook(t *testing.T) {
+	mock := NewMockGitHubClient()
+	ctx := context.Background()
+
+	result, err := mock.CreateRepoWebhook(ctx, "owner", "repo", "https://example.com/webhook", "secret")
+	if err != nil {
+		t.Errorf("CreateRepoWebhook() error = %v", err)
+	}
+	if result == nil {
+		t.Error("CreateRepoWebhook() returned nil")
+	}
+	if result.ID != 12345 {
+		t.Errorf("CreateRepoWebhook().ID = %d, want 12345", result.ID)
+	}
+}
+
+func TestMockGitHubClient_CreateOrgWebhook(t *testing.T) {
+	mock := NewMockGitHubClient()
+	ctx := context.Background()
+
+	result, err := mock.CreateOrgWebhook(ctx, "my-org", "https://example.com/webhook", "secret")
+	if err != nil {
+		t.Errorf("CreateOrgWebhook() error = %v", err)
+	}
+	if result == nil {
+		t.Error("CreateOrgWebhook() returned nil")
+	}
+	if result.ID != 12346 {
+		t.Errorf("CreateOrgWebhook().ID = %d, want 12346", result.ID)
+	}
+}
+
+func TestMockGitHubClient_ListRepoWebhooks(t *testing.T) {
+	mock := NewMockGitHubClient()
+	ctx := context.Background()
+
+	hooks, err := mock.ListRepoWebhooks(ctx, "owner", "repo")
+	if err != nil {
+		t.Errorf("ListRepoWebhooks() error = %v", err)
+	}
+	if hooks == nil {
+		t.Error("ListRepoWebhooks() returned nil, want empty slice")
+	}
+	if len(hooks) != 0 {
+		t.Errorf("ListRepoWebhooks() returned %d hooks, want 0", len(hooks))
+	}
+}
+
+func TestMockGitHubClient_ListOrgWebhooks(t *testing.T) {
+	mock := NewMockGitHubClient()
+	ctx := context.Background()
+
+	hooks, err := mock.ListOrgWebhooks(ctx, "my-org")
+	if err != nil {
+		t.Errorf("ListOrgWebhooks() error = %v", err)
+	}
+	if hooks == nil {
+		t.Error("ListOrgWebhooks() returned nil, want empty slice")
+	}
+	if len(hooks) != 0 {
+		t.Errorf("ListOrgWebhooks() returned %d hooks, want 0", len(hooks))
+	}
+}
+
+func TestMockGitHubClient_DeleteRepoWebhook(t *testing.T) {
+	mock := NewMockGitHubClient()
+	ctx := context.Background()
+
+	err := mock.DeleteRepoWebhook(ctx, "owner", "repo", 12345)
+	if err != nil {
+		t.Errorf("DeleteRepoWebhook() error = %v", err)
+	}
+}
+
+func TestMockGitHubClient_DeleteOrgWebhook(t *testing.T) {
+	mock := NewMockGitHubClient()
+	ctx := context.Background()
+
+	err := mock.DeleteOrgWebhook(ctx, "my-org", 67890)
+	if err != nil {
+		t.Errorf("DeleteOrgWebhook() error = %v", err)
+	}
+}
+
+func TestGetOwner(t *testing.T) {
+	c := NewClient("token", "myowner", "repo", "repo")
+
+	owner := c.GetOwner()
+	if owner != "myowner" {
+		t.Errorf("GetOwner() = %q, want myowner", owner)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestConstants(t *testing.T) {
@@ -310,4 +311,141 @@ func TestDockerClientInterface(t *testing.T) {
 	// Test that both Client and MockClient satisfy DockerClient interface
 	var _ DockerClient = (*Client)(nil)
 	var _ DockerClient = (*MockClient)(nil)
+}
+
+func TestMockClient_IsContainerExited(t *testing.T) {
+	mock := NewMockClient()
+	ctx := context.Background()
+
+	// Add a running container
+	mock.SetRunners([]Runner{
+		{ID: "1", ContainerID: "container-123", Status: "running"},
+	})
+
+	// Container exists and is running - should return false
+	exited, err := mock.IsContainerExited(ctx, "container-123")
+	if err != nil {
+		t.Errorf("IsContainerExited() error = %v", err)
+	}
+	if exited {
+		t.Error("IsContainerExited() for running container = true, want false")
+	}
+
+	if len(mock.IsContainerExitedCalls) != 1 {
+		t.Errorf("IsContainerExitedCalls = %d, want 1", len(mock.IsContainerExitedCalls))
+	}
+
+	// Container not found - default returns true
+	exited, err = mock.IsContainerExited(ctx, "nonexistent")
+	if err != nil {
+		t.Errorf("IsContainerExited() for nonexistent error = %v", err)
+	}
+	if !exited {
+		t.Error("IsContainerExited() for nonexistent = false, want true")
+	}
+
+	// Custom behavior
+	mock.IsContainerExitedFunc = func(ctx context.Context, containerID string) (bool, error) {
+		return true, nil
+	}
+
+	exited, err = mock.IsContainerExited(ctx, "container-456")
+	if err != nil {
+		t.Errorf("IsContainerExited() with func error = %v", err)
+	}
+	if !exited {
+		t.Error("IsContainerExited() with func = false, want true")
+	}
+}
+
+func TestMockClient_StopRunner(t *testing.T) {
+	mock := NewMockClient()
+	ctx := context.Background()
+
+	err := mock.StopRunner(ctx, "container-123", 10)
+	if err != nil {
+		t.Errorf("StopRunner() error = %v", err)
+	}
+
+	if len(mock.StopRunnerCalls) != 1 {
+		t.Errorf("StopRunnerCalls = %d, want 1", len(mock.StopRunnerCalls))
+	}
+	if mock.StopRunnerCalls[0] != "container-123" {
+		t.Errorf("StopRunnerCalls[0] = %q, want container-123", mock.StopRunnerCalls[0])
+	}
+
+	// Custom error behavior
+	mock.StopRunnerFunc = func(ctx context.Context, containerID string, timeout int) error {
+		return errors.New("stop failed")
+	}
+
+	err = mock.StopRunner(ctx, "container-456", 5)
+	if err == nil {
+		t.Error("StopRunner() with func should return error")
+	}
+}
+
+func TestMockClient_KillTimedOutRunners(t *testing.T) {
+	mock := NewMockClient()
+	ctx := context.Background()
+
+	killed, err := mock.KillTimedOutRunners(ctx, 30*time.Minute)
+	if err != nil {
+		t.Errorf("KillTimedOutRunners() error = %v", err)
+	}
+	if len(killed) != 0 {
+		t.Errorf("KillTimedOutRunners() = %d runners, want 0", len(killed))
+	}
+
+	if mock.KillTimedOutRunnersCalls != 1 {
+		t.Errorf("KillTimedOutRunnersCalls = %d, want 1", mock.KillTimedOutRunnersCalls)
+	}
+}
+
+func TestMockClient_CreateRunner_CustomFunc(t *testing.T) {
+	mock := NewMockClient()
+	ctx := context.Background()
+
+	customRunner := &Runner{
+		ID:          "custom-id",
+		ContainerID: "custom-container",
+		Status:      "created",
+	}
+
+	mock.CreateRunnerFunc = func(ctx context.Context, cfg RunnerConfig) (*Runner, error) {
+		return customRunner, nil
+	}
+
+	cfg := RunnerConfig{
+		Image: "test-image",
+	}
+
+	runner, err := mock.CreateRunner(ctx, cfg)
+	if err != nil {
+		t.Errorf("CreateRunner() error = %v", err)
+	}
+	if runner.ID != "custom-id" {
+		t.Errorf("runner.ID = %q, want custom-id", runner.ID)
+	}
+}
+
+func TestMockClient_CreateRunner_Error(t *testing.T) {
+	mock := NewMockClient()
+	ctx := context.Background()
+
+	mock.CreateRunnerFunc = func(ctx context.Context, cfg RunnerConfig) (*Runner, error) {
+		return nil, errors.New("create failed")
+	}
+
+	cfg := RunnerConfig{
+		Image: "test-image",
+	}
+
+	runner, err := mock.CreateRunner(ctx, cfg)
+	if err == nil {
+		t.Error("CreateRunner() should return error")
+	}
+	if runner != nil {
+		t.Error("CreateRunner() should return nil runner on error")
+	}
 }

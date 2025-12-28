@@ -510,3 +510,97 @@ func TestGetPrivateKey(t *testing.T) {
 		}
 	})
 }
+
+func TestSetWebhookSecret(t *testing.T) {
+	cfg := &Config{}
+
+	cfg.SetWebhookSecret("test-secret")
+	if cfg.Webhook.Secret != "test-secret" {
+		t.Errorf("SetWebhookSecret() = %q, want test-secret", cfg.Webhook.Secret)
+	}
+
+	cfg.SetWebhookSecret("new-secret")
+	if cfg.Webhook.Secret != "new-secret" {
+		t.Errorf("SetWebhookSecret() = %q, want new-secret", cfg.Webhook.Secret)
+	}
+}
+
+func TestRegisteredHooks(t *testing.T) {
+	cfg := &Config{}
+
+	// Test GetRegisteredHooks on empty config
+	hooks := cfg.GetRegisteredHooks()
+	if hooks == nil {
+		t.Error("GetRegisteredHooks() should return empty map, not nil")
+	}
+	if len(hooks) != 0 {
+		t.Errorf("GetRegisteredHooks() len = %d, want 0", len(hooks))
+	}
+
+	// Test AddRegisteredHook
+	hook1 := RegisteredHook{
+		ID:        123,
+		URL:       "https://example.com/webhook",
+		CreatedAt: "2024-01-01T00:00:00Z",
+		Type:      "repo",
+	}
+	cfg.AddRegisteredHook("owner/repo1", hook1)
+
+	hooks = cfg.GetRegisteredHooks()
+	if len(hooks) != 1 {
+		t.Errorf("After AddRegisteredHook(), len = %d, want 1", len(hooks))
+	}
+
+	// Test GetRegisteredHook
+	got, exists := cfg.GetRegisteredHook("owner/repo1")
+	if !exists {
+		t.Error("GetRegisteredHook(owner/repo1) exists = false, want true")
+	}
+	if got.ID != 123 {
+		t.Errorf("GetRegisteredHook().ID = %d, want 123", got.ID)
+	}
+	if got.URL != "https://example.com/webhook" {
+		t.Errorf("GetRegisteredHook().URL = %q, want https://example.com/webhook", got.URL)
+	}
+
+	// Test GetRegisteredHook for non-existent
+	_, exists = cfg.GetRegisteredHook("nonexistent")
+	if exists {
+		t.Error("GetRegisteredHook(nonexistent) exists = true, want false")
+	}
+
+	// Test adding another hook
+	hook2 := RegisteredHook{
+		ID:        456,
+		URL:       "https://example.com/webhook2",
+		CreatedAt: "2024-01-02T00:00:00Z",
+		Type:      "org",
+	}
+	cfg.AddRegisteredHook("my-org", hook2)
+
+	hooks = cfg.GetRegisteredHooks()
+	if len(hooks) != 2 {
+		t.Errorf("After second AddRegisteredHook(), len = %d, want 2", len(hooks))
+	}
+
+	// Test RemoveRegisteredHook
+	cfg.RemoveRegisteredHook("owner/repo1")
+	hooks = cfg.GetRegisteredHooks()
+	if len(hooks) != 1 {
+		t.Errorf("After RemoveRegisteredHook(), len = %d, want 1", len(hooks))
+	}
+
+	_, exists = cfg.GetRegisteredHook("owner/repo1")
+	if exists {
+		t.Error("After RemoveRegisteredHook(), hook should not exist")
+	}
+
+	// Verify the other hook still exists
+	got, exists = cfg.GetRegisteredHook("my-org")
+	if !exists {
+		t.Error("GetRegisteredHook(my-org) should still exist")
+	}
+	if got.ID != 456 {
+		t.Errorf("GetRegisteredHook(my-org).ID = %d, want 456", got.ID)
+	}
+}
