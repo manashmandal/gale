@@ -71,6 +71,7 @@ var (
 	webhookDaemonMode bool
 	requireSignature  bool
 	registerOnStart   string
+	skipValidation    bool
 )
 
 func getWebhookPidFile() string {
@@ -104,6 +105,7 @@ func init() {
 	webhookCmd.Flags().BoolVarP(&webhookDaemonMode, "daemon", "d", false, "run in background (daemon mode)")
 	webhookCmd.Flags().BoolVar(&requireSignature, "require-signature", false, "require webhook signature verification (recommended for production)")
 	webhookCmd.Flags().StringVar(&registerOnStart, "register", "", "register webhook on repo before starting (requires --funnel)")
+	webhookCmd.Flags().BoolVar(&skipValidation, "skip-validation", false, "skip public URL validation (use if validation fails but funnel works)")
 
 	webhookRestartCmd.Flags().IntVarP(&webhookPort, "port", "p", 0, "port to listen on (default 8080)")
 	webhookRestartCmd.Flags().BoolVar(&useFunnel, "funnel", false, "use Tailscale Funnel for public HTTPS endpoint")
@@ -529,15 +531,58 @@ waitLoop:
 	}()
 
 	// Validate funnel is publicly accessible
-	fmt.Print("  • Validating public accessibility...")
-
 	healthURL := fmt.Sprintf("https://%s/health", dnsName)
-	if err := validateFunnelAccess(ctx, dnsName, healthURL); err != nil {
-		fmt.Printf(" %s✖%s\n", colorRed, colorReset)
-		fmt.Printf("    %sWarning: Could not verify public access: %v%s\n", colorYellow, err, colorReset)
-		fmt.Printf("    The funnel may still work - first request triggers certificate issuance.\n")
+	validationPassed := false
+
+	if skipValidation {
+		fmt.Printf("  • Skipping public accessibility validation %s(--skip-validation)%s\n", colorYellow, colorReset)
+		validationPassed = true
 	} else {
-		fmt.Printf(" %s✓%s\n", colorGreen, colorReset)
+		fmt.Println("  • Validating public accessibility...")
+
+		lastLine := ""
+		progress := func(attempt int, maxAttempts int, status string, err error) {
+			// Clear previous line
+			if lastLine != "" {
+				fmt.Printf("\r%s\r", strings.Repeat(" ", len(lastLine)+5))
+			}
+
+			if status == "success" {
+				fmt.Printf("    %s✓%s Validation passed on attempt %d\n", colorGreen, colorReset, attempt)
+				return
+			}
+
+			if err != nil {
+				line := fmt.Sprintf("    Attempt %d/%d: %s (%v)", attempt, maxAttempts, status, err)
+				fmt.Printf("\r%s", line)
+				lastLine = line
+			} else {
+				line := fmt.Sprintf("    Attempt %d/%d: %s", attempt, maxAttempts, status)
+				fmt.Printf("\r%s", line)
+				lastLine = line
+			}
+		}
+
+		if err := validateFunnelAccess(ctx, dnsName, healthURL, progress); err != nil {
+			fmt.Println()
+			fmt.Printf("    %s✖ Validation failed: %v%s\n", colorRed, err, colorReset)
+			fmt.Println()
+			fmt.Printf("    %sThe funnel URL could not be reached from the public internet.%s\n", colorYellow, colorReset)
+			fmt.Println("    Possible causes:")
+			fmt.Println("      - Tailscale Funnel not enabled for this node")
+			fmt.Println("      - Firewall blocking outbound connections")
+			fmt.Println("      - Certificate provisioning still in progress")
+			fmt.Println()
+			fmt.Println("    To skip validation and start anyway:")
+			fmt.Println("      gale webhook --funnel --skip-validation")
+			fmt.Println()
+			return fmt.Errorf("funnel validation failed")
+		}
+		validationPassed = true
+	}
+
+	if !validationPassed {
+		return fmt.Errorf("funnel validation required")
 	}
 
 	// Register webhook if --register flag was provided
@@ -644,8 +689,15 @@ func registerWebhookOnStart(ctx context.Context, cfg *config.Config, webhookURL 
 	return nil
 }
 
-func validateFunnelAccess(ctx context.Context, hostname, healthURL string) error {
+type validationProgress func(attempt int, maxAttempts int, status string, err error)
+
+func validateFunnelAccess(ctx context.Context, hostname, healthURL string, progress validationProgress) error {
+	const maxAttempts = 10
+	const retryDelay = 3 * time.Second
+
 	// Resolve public IP via Google DNS to bypass local Tailscale resolution
+	progress(1, maxAttempts, "resolving DNS", nil)
+
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -654,18 +706,32 @@ func validateFunnelAccess(ctx context.Context, hostname, healthURL string) error
 		},
 	}
 
-	ips, err := resolver.LookupIP(ctx, "ip4", hostname)
-	if err != nil || len(ips) == 0 {
-		return fmt.Errorf("DNS resolution failed: %w", err)
+	var publicIP string
+	var dnsErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		ips, err := resolver.LookupIP(ctx, "ip4", hostname)
+		if err == nil && len(ips) > 0 {
+			publicIP = ips[0].String()
+			break
+		}
+		dnsErr = err
+		if attempt < 3 {
+			progress(attempt, 3, "DNS resolution failed, retrying", err)
+			time.Sleep(2 * time.Second)
+		}
 	}
-	publicIP := ips[0].String()
+
+	if publicIP == "" {
+		return fmt.Errorf("DNS resolution failed after 3 attempts: %w", dnsErr)
+	}
+
+	progress(1, maxAttempts, fmt.Sprintf("resolved to %s", publicIP), nil)
 
 	// Create HTTP client that uses the public IP
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				// Replace hostname with public IP
 				_, port, _ := net.SplitHostPort(addr)
 				return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(publicIP, port))
 			},
@@ -675,28 +741,38 @@ func validateFunnelAccess(ctx context.Context, hostname, healthURL string) error
 		},
 	}
 
-	// Retry a few times as certificate might be provisioned on first request
+	// Retry with visible progress - certificate provisioning can take time
 	var lastErr error
-	for i := 0; i < 3; i++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		progress(attempt, maxAttempts, "connecting", nil)
+
 		req, err := http.NewRequestWithContext(ctx, "GET", healthURL, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("creating request: %w", err)
 		}
 
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
-			time.Sleep(2 * time.Second)
+			if attempt < maxAttempts {
+				progress(attempt, maxAttempts, "failed, retrying", err)
+				time.Sleep(retryDelay)
+			}
 			continue
 		}
 		resp.Body.Close()
 
 		if resp.StatusCode == http.StatusOK {
+			progress(attempt, maxAttempts, "success", nil)
 			return nil
 		}
-		lastErr = fmt.Errorf("unexpected status: %d", resp.StatusCode)
-		time.Sleep(2 * time.Second)
+
+		lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+		if attempt < maxAttempts {
+			progress(attempt, maxAttempts, "failed, retrying", lastErr)
+			time.Sleep(retryDelay)
+		}
 	}
 
-	return lastErr
+	return fmt.Errorf("validation failed after %d attempts: %w", maxAttempts, lastErr)
 }
