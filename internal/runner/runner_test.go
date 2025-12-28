@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/manashmandal/gale/internal/docker"
+	"github.com/manashmandal/gale/internal/native"
 )
 
 func TestRunner_Struct(t *testing.T) {
@@ -247,6 +248,116 @@ func TestDockerAdapter_IsRunnerExited(t *testing.T) {
 func TestDockerAdapter_ImplementsClient(t *testing.T) {
 	mockClient := docker.NewMockClient()
 	adapter := NewDockerAdapter(mockClient)
+
+	var _ Client = adapter
+}
+
+func TestNativeAdapter_NewNativeAdapter(t *testing.T) {
+	tmpDir := t.TempDir()
+	nativeClient, err := native.NewClient(tmpDir)
+	if err != nil {
+		t.Fatalf("native.NewClient() error = %v", err)
+	}
+
+	adapter := NewNativeAdapter(nativeClient)
+	if adapter == nil {
+		t.Fatal("NewNativeAdapter returned nil")
+	}
+}
+
+func TestNativeAdapter_Close(t *testing.T) {
+	tmpDir := t.TempDir()
+	nativeClient, _ := native.NewClient(tmpDir)
+	adapter := NewNativeAdapter(nativeClient)
+
+	err := adapter.Close()
+	if err != nil {
+		t.Errorf("Close() error = %v", err)
+	}
+}
+
+func TestNativeAdapter_ListRunners(t *testing.T) {
+	tmpDir := t.TempDir()
+	nativeClient, _ := native.NewClient(tmpDir)
+	adapter := NewNativeAdapter(nativeClient)
+
+	runners, err := adapter.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunners() error = %v", err)
+	}
+	if runners == nil {
+		t.Error("ListRunners() returned nil")
+	}
+}
+
+func TestNativeAdapter_GetActiveRunnerCount(t *testing.T) {
+	tmpDir := t.TempDir()
+	nativeClient, _ := native.NewClient(tmpDir)
+	adapter := NewNativeAdapter(nativeClient)
+
+	count, err := adapter.GetActiveRunnerCount(context.Background())
+	if err != nil {
+		t.Fatalf("GetActiveRunnerCount() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
+func TestNativeAdapter_RemoveRunner(t *testing.T) {
+	tmpDir := t.TempDir()
+	nativeClient, _ := native.NewClient(tmpDir)
+	adapter := NewNativeAdapter(nativeClient)
+
+	err := adapter.RemoveRunner(context.Background(), "nonexistent")
+	if err != nil {
+		t.Errorf("RemoveRunner() error = %v", err)
+	}
+}
+
+func TestNativeAdapter_CleanupExitedRunners(t *testing.T) {
+	tmpDir := t.TempDir()
+	nativeClient, _ := native.NewClient(tmpDir)
+	adapter := NewNativeAdapter(nativeClient)
+
+	count, err := adapter.CleanupExitedRunners(context.Background())
+	if err != nil {
+		t.Fatalf("CleanupExitedRunners() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
+func TestNativeAdapter_StopRunner(t *testing.T) {
+	tmpDir := t.TempDir()
+	nativeClient, _ := native.NewClient(tmpDir)
+	adapter := NewNativeAdapter(nativeClient)
+
+	err := adapter.StopRunner(context.Background(), "nonexistent", 10)
+	if err != nil {
+		t.Errorf("StopRunner() error = %v", err)
+	}
+}
+
+func TestNativeAdapter_IsRunnerExited(t *testing.T) {
+	tmpDir := t.TempDir()
+	nativeClient, _ := native.NewClient(tmpDir)
+	adapter := NewNativeAdapter(nativeClient)
+
+	exited, err := adapter.IsRunnerExited(context.Background(), "nonexistent")
+	if err != nil {
+		t.Fatalf("IsRunnerExited() error = %v", err)
+	}
+	if !exited {
+		t.Error("exited = false, want true for nonexistent runner")
+	}
+}
+
+func TestNativeAdapter_ImplementsClient(t *testing.T) {
+	tmpDir := t.TempDir()
+	nativeClient, _ := native.NewClient(tmpDir)
+	adapter := NewNativeAdapter(nativeClient)
 
 	var _ Client = adapter
 }
