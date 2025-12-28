@@ -83,7 +83,7 @@ Gale is intentionally simple. It's not the right tool if:
 
 - **You need multi-machine orchestration.** Gale runs on a single Docker host. If you need runners coordinated across multiple machines with load balancing and failover, look at ARC or commercial solutions.
 
-- **You need Windows or macOS runners (for now).** Gale currently spawns Linux containers only. Native Windows/macOS support isn't available yet — though self-hosted macOS runners make great financial sense since GitHub charges 10x for macOS minutes.
+- **You need Windows or macOS runners.** Gale spawns Linux containers using Docker. Even on a macOS host, Docker runs containers inside a Linux VM, so you cannot run macOS-native code in a Gale-managed runner. For macOS workflows, you need [native self-hosted runners](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/adding-self-hosted-runners) or VM-based solutions like [Tart](https://github.com/cirruslabs/tart). This is a fundamental Docker limitation, not a Gale limitation.
 
 - **You need enterprise-grade HA.** Gale is a single binary with no clustering support. If the host goes down, your runners go with it.
 

@@ -1,5 +1,24 @@
 # Work Log
 
+## 2025-12-28 03:45 UTC - macOS Runner Clarification
+
+### Issue
+User asked about running macOS containers when the host is macOS.
+
+### Explanation
+Docker on macOS runs containers inside a Linux VM. You cannot run macOS-native code in a Docker container - this is a fundamental Docker limitation. The `myoung34/github-runner` image only supports Linux (x86_64 and arm64).
+
+### Alternatives for macOS Runners
+1. **Native self-hosted runners** - Run the GitHub Actions runner binary directly on macOS
+2. **macOS VM solutions** - Use Tart (Apple Virtualization Framework), Orchard, etc.
+3. **Commercial solutions** - MacStadium, Cirrus CI macOS runners
+
+### Changes
+- Updated README to clarify this is a Docker limitation, not a Gale limitation
+- Added links to native runner docs and Tart for macOS
+
+---
+
 ## 2025-12-28 03:15 UTC - Daemon Mode Reliability Fixes
 
 ### Issue
