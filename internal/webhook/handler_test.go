@@ -1369,3 +1369,70 @@ func TestMonitorRunnerStartup_CheckError(t *testing.T) {
 		t.Fatal("monitorRunnerStartup timed out")
 	}
 }
+
+func TestServeHTTP_DuplicateQueuedWebhook(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			Token: "test-token",
+			Repos: []string{},
+		},
+		Scaler: config.ScalerConfig{
+			MaxRunners: 10,
+		},
+		Runner: config.RunnerConfig{
+			Image:  "test-image",
+			Labels: []string{"gale"},
+		},
+	}
+
+	mockDocker := docker.NewMockClient()
+	h, err := NewHandlerWithDocker(cfg, testLogger(), mockDocker)
+	if err != nil {
+		t.Fatalf("NewHandlerWithDocker() error = %v", err)
+	}
+
+	event := WorkflowJobEvent{
+		Action: "queued",
+	}
+	event.WorkflowJob.ID = 456
+	event.WorkflowJob.Name = "test-job"
+	event.WorkflowJob.Labels = []string{"gale", "linux"}
+	event.Repository.FullName = "owner/repo"
+	event.Repository.HTMLURL = "https://github.com/owner/repo"
+
+	body, _ := json.Marshal(event)
+
+	// First webhook - should create runner
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("first queued status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if len(mockDocker.CreateRunnerCalls) != 1 {
+		t.Errorf("after first webhook CreateRunnerCalls = %d, want 1", len(mockDocker.CreateRunnerCalls))
+	}
+
+	// Duplicate webhook for same job - should NOT create another runner
+	req = httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("duplicate queued status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Should still be only 1 CreateRunner call (duplicate was rejected)
+	if len(mockDocker.CreateRunnerCalls) != 1 {
+		t.Errorf("after duplicate webhook CreateRunnerCalls = %d, want 1 (no new runner for duplicate)", len(mockDocker.CreateRunnerCalls))
+	}
+
+	// Should still have only 1 active runner
+	if h.GetActiveRunnerCount() != 1 {
+		t.Errorf("GetActiveRunnerCount() = %d, want 1", h.GetActiveRunnerCount())
+	}
+}

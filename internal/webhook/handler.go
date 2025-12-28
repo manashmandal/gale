@@ -244,6 +244,12 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 
 	// Check runner limit and reserve slot atomically
 	h.mu.Lock()
+	// Prevent duplicate runners for the same job (duplicate webhooks from GitHub retries)
+	if _, exists := h.activeRunners[event.WorkflowJob.ID]; exists {
+		h.mu.Unlock()
+		h.logger.Debug("runner already spawned for job", "job_id", event.WorkflowJob.ID)
+		return
+	}
 	activeCount := len(h.activeRunners)
 	if activeCount >= h.cfg.Scaler.MaxRunners {
 		h.mu.Unlock()
