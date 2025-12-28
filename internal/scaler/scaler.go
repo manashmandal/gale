@@ -173,9 +173,10 @@ func (s *Scaler) reconcile(ctx context.Context) {
 
 	// Filter to only queued/waiting jobs for scaling decisions
 	// (in_progress jobs already have runners assigned)
+	// Only count jobs that match our runner labels (ForGale)
 	var queuedJobs []github.QueuedJob
 	for _, job := range allJobs {
-		if job.Status == "queued" || job.Status == "waiting" {
+		if job.ForGale && (job.Status == "queued" || job.Status == "waiting") {
 			queuedJobs = append(queuedJobs, job)
 		}
 	}
@@ -326,10 +327,10 @@ func (s *Scaler) GetStats(ctx context.Context) (*Stats, error) {
 		return nil, err
 	}
 
-	// Count only actually queued jobs (not in_progress)
+	// Count only actually queued jobs for gale runners (not in_progress)
 	queuedCount := 0
 	for _, job := range allJobs {
-		if job.Status == "queued" || job.Status == "waiting" {
+		if job.ForGale && (job.Status == "queued" || job.Status == "waiting") {
 			queuedCount++
 		}
 	}

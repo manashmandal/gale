@@ -200,8 +200,8 @@ func TestScaler_GetStats(t *testing.T) {
 
 	// Set up mock data
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 100, JobName: "build", Status: "queued", Repo: "testowner/testrepo"},
-		{RunID: 1, JobID: 101, JobName: "test", Status: "queued", Repo: "testowner/testrepo"},
+		{RunID: 1, JobID: 100, JobName: "build", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
+		{RunID: 1, JobID: 101, JobName: "test", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
 	})
 	mockGH.SetRateLimitInfo(100, 5000, 2500)
 	mockDocker.SetRunners([]docker.Runner{
@@ -307,9 +307,9 @@ func TestScaler_Reconcile_WithQueuedJobs(t *testing.T) {
 
 	// 3 queued jobs, no active runners
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo"},
-		{RunID: 1, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/testrepo"},
-		{RunID: 1, JobID: 102, JobName: "job3", Status: "queued", Repo: "testowner/testrepo"},
+		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
+		{RunID: 1, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
+		{RunID: 1, JobID: 102, JobName: "job3", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
 	})
 	mockDocker.SetRunners([]docker.Runner{})
 
@@ -334,11 +334,11 @@ func TestScaler_Reconcile_MaxRunnersLimit(t *testing.T) {
 
 	// 5 queued jobs, but max is 2
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo"},
-		{RunID: 1, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/testrepo"},
-		{RunID: 1, JobID: 102, JobName: "job3", Status: "queued", Repo: "testowner/testrepo"},
-		{RunID: 1, JobID: 103, JobName: "job4", Status: "queued", Repo: "testowner/testrepo"},
-		{RunID: 1, JobID: 104, JobName: "job5", Status: "queued", Repo: "testowner/testrepo"},
+		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
+		{RunID: 1, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
+		{RunID: 1, JobID: 102, JobName: "job3", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
+		{RunID: 1, JobID: 103, JobName: "job4", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
+		{RunID: 1, JobID: 104, JobName: "job5", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
 	})
 	mockDocker.SetRunners([]docker.Runner{})
 
@@ -362,8 +362,8 @@ func TestScaler_Reconcile_AlreadyHaveEnoughRunners(t *testing.T) {
 
 	// 2 queued jobs, 2 active runners - no need to scale
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo"},
-		{RunID: 1, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/testrepo"},
+		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
+		{RunID: 1, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
 	})
 	mockDocker.SetRunners([]docker.Runner{
 		{ID: "runner-1", ContainerID: "container-1", Status: "running"},
@@ -439,7 +439,7 @@ func TestScaler_ScaleUpDelay(t *testing.T) {
 	mockDocker := docker.NewMockClient()
 
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo"},
+		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
 	})
 	mockDocker.SetRunners([]docker.Runner{})
 
@@ -454,7 +454,7 @@ func TestScaler_ScaleUpDelay(t *testing.T) {
 	// Second reconcile immediately should be throttled
 	mockDocker.Reset()
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/testrepo"},
+		{RunID: 1, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
 	})
 	scaler.reconcile(ctx)
 
@@ -573,7 +573,7 @@ func TestScaler_OrgScope(t *testing.T) {
 
 	mockGH.SetOrgScope(true)
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/repo1"},
+		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/repo1", ForGale: true},
 	})
 
 	scaler, _ := NewWithClients(cfg, logger, mockGH, mockDocker, Options{})
@@ -606,8 +606,8 @@ func TestScaler_MultiRepo(t *testing.T) {
 
 	// Jobs from different repos
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/repo1"},
-		{RunID: 2, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/repo2"},
+		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/repo1", ForGale: true},
+		{RunID: 2, JobID: 101, JobName: "job2", Status: "queued", Repo: "testowner/repo2", ForGale: true},
 	})
 
 	scaler, _ := NewWithClients(cfg, logger, mockGH, mockDocker, Options{})
@@ -634,7 +634,7 @@ func TestScaler_CreateRunnerError(t *testing.T) {
 	}
 
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo"},
+		{RunID: 1, JobID: 100, JobName: "job1", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
 	})
 
 	scaler, _ := NewWithClients(cfg, logger, mockGH, mockDocker, Options{})
@@ -668,7 +668,7 @@ func TestNew_WithMockClients(t *testing.T) {
 
 	// Verify the injected clients are used
 	mockGH.SetQueuedJobs([]github.QueuedJob{
-		{RunID: 1, JobID: 100, JobName: "test", Status: "queued", Repo: "testowner/testrepo"},
+		{RunID: 1, JobID: 100, JobName: "test", Status: "queued", Repo: "testowner/testrepo", ForGale: true},
 	})
 
 	ctx := context.Background()

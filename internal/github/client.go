@@ -41,7 +41,9 @@ type QueuedJob struct {
 	JobID   int64
 	JobName string
 	Status  string
-	Repo    string // owner/repo format
+	Repo    string   // owner/repo format
+	Labels  []string // runs-on labels
+	ForGale bool     // true if this job matches our runner labels
 }
 
 type ClientOptions struct {
@@ -280,16 +282,14 @@ func (c *Client) getRepoQueuedJobs(ctx context.Context, owner, repo string) ([]Q
 			if status != "queued" && status != "waiting" && status != "in_progress" {
 				continue
 			}
-			// Check if job requires self-hosted runner
-			if !c.requiresSelfHosted(job) {
-				continue
-			}
 
 			qj := QueuedJob{
-				RunID:  *run.ID,
-				JobID:  *job.ID,
-				Status: status,
-				Repo:   repoFullName,
+				RunID:   *run.ID,
+				JobID:   *job.ID,
+				Status:  status,
+				Repo:    repoFullName,
+				Labels:  job.Labels,
+				ForGale: c.requiresSelfHosted(job),
 			}
 			if job.Name != nil {
 				qj.JobName = *job.Name

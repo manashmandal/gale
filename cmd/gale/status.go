@@ -129,18 +129,26 @@ func printJobs(jobs []github.QueuedJob) {
 		return
 	}
 
-	// Count by status
-	queued := 0
-	inProgress := 0
+	// Count by status and runner type
+	galeQueued := 0
+	galeInProgress := 0
+	otherRunner := 0
 	for _, j := range jobs {
-		if j.Status == "in_progress" {
-			inProgress++
+		if !j.ForGale {
+			otherRunner++
+		} else if j.Status == "in_progress" {
+			galeInProgress++
 		} else {
-			queued++
+			galeQueued++
 		}
 	}
 
-	fmt.Printf("Active jobs: %d (queued: %d, in_progress: %d)\n\n", len(jobs), queued, inProgress)
+	fmt.Printf("Active jobs: %d\n", len(jobs))
+	fmt.Printf("  Gale: %d (queued: %d, in_progress: %d)\n", galeQueued+galeInProgress, galeQueued, galeInProgress)
+	if otherRunner > 0 {
+		fmt.Printf("  Other runners: %d\n", otherRunner)
+	}
+	fmt.Println()
 
 	// Group by repo
 	byRepo := make(map[string][]github.QueuedJob)
@@ -151,7 +159,15 @@ func printJobs(jobs []github.QueuedJob) {
 	for repo, repoJobs := range byRepo {
 		fmt.Printf("  %s: %d job(s)\n", repo, len(repoJobs))
 		for _, j := range repoJobs {
-			fmt.Printf("    - %s (%s)\n", j.JobName, j.Status)
+			runnerInfo := ""
+			if !j.ForGale {
+				if len(j.Labels) > 0 {
+					runnerInfo = fmt.Sprintf(" [other: %v]", j.Labels)
+				} else {
+					runnerInfo = " [other runner]"
+				}
+			}
+			fmt.Printf("    - %s (%s)%s\n", j.JobName, j.Status, runnerInfo)
 		}
 	}
 }
