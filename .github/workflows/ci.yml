@@ -28,6 +28,12 @@ jobs:
 
       - name: Check coverage
         run: |
+          # Small delay to ensure coverage.out is fully written
+          sleep 2
+          echo "Checking coverage.out exists..."
+          ls -la coverage.out
+          echo "Running go tool cover..."
+          go tool cover -func=coverage.out | tail -5
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           # Use awk for comparison instead of bc
