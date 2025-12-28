@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +20,7 @@ var (
 	registerURL      string
 	noAddRepo        bool
 	registerHostname string
+	usingFunnel      bool // tracks if we're registering with funnel URL
 )
 
 var webhookRegisterCmd = &cobra.Command{
@@ -91,7 +94,30 @@ func runWebhookRegister(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	webhookURL := registerURL
+	usingFunnel = false
 	if webhookURL == "" {
+		// Ask user if they want to use Tailscale Funnel
+		fmt.Println("No webhook URL specified.")
+		fmt.Println()
+		fmt.Println("Do you want to register using Tailscale Funnel? (y/n)")
+		fmt.Print("> ")
+
+		reader := bufio.NewReader(os.Stdin)
+		answer, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("reading input: %w", err)
+		}
+		answer = strings.TrimSpace(strings.ToLower(answer))
+
+		if answer != "y" && answer != "yes" {
+			fmt.Println()
+			fmt.Println("Please specify a webhook URL using --url flag:")
+			fmt.Println("  gale webhook register <repo> --url https://your-server.com/webhook")
+			return nil
+		}
+
+		usingFunnel = true
+
 		// Use the same hostname that webhook --funnel will use
 		hostname := registerHostname
 		if hostname == "" {
@@ -102,6 +128,7 @@ func runWebhookRegister(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("detecting Tailscale URL: %w\n\nUse --url to specify the webhook URL manually", err)
 		}
 		webhookURL = fmt.Sprintf("https://%s/webhook", dnsName)
+		fmt.Println()
 		fmt.Printf("Using Tailscale Funnel URL: %s\n", webhookURL)
 		fmt.Printf("  (hostname: %s)\n", hostname)
 	}
@@ -175,12 +202,32 @@ func registerRepoWebhook(ctx context.Context, cfg *config.Config, ghClient *gith
 		return fmt.Errorf("saving config: %w", err)
 	}
 
-	fmt.Printf("Webhook registered successfully!\n")
-	fmt.Printf("  Repository: %s/%s\n", owner, repoName)
-	fmt.Printf("  Webhook ID: %d\n", reg.ID)
-	fmt.Printf("  URL:        %s\n", webhookURL)
+	fmt.Println()
+	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
+	fmt.Println("│  Webhook registered successfully!                           │")
+	fmt.Println("├─────────────────────────────────────────────────────────────┤")
+	fmt.Printf("│  Repository: %-47s │\n", fmt.Sprintf("%s/%s", owner, repoName))
+	fmt.Printf("│  Webhook ID: %-47d │\n", reg.ID)
+	fmt.Printf("│  URL:        %-47s │\n", truncateURL(webhookURL, 47))
+	fmt.Println("└─────────────────────────────────────────────────────────────┘")
+
+	if usingFunnel {
+		fmt.Println()
+		fmt.Println("📌 Next step: Start the webhook server with Tailscale Funnel:")
+		fmt.Println()
+		fmt.Println("   gale webhook --funnel")
+		fmt.Println()
+		fmt.Println("   The webhook will only receive events when the server is running.")
+	}
 
 	return nil
+}
+
+func truncateURL(url string, maxLen int) string {
+	if len(url) <= maxLen {
+		return url
+	}
+	return url[:maxLen-3] + "..."
 }
 
 func registerOrgWebhook(ctx context.Context, cfg *config.Config, ghClient *github.Client, webhookURL, webhookSecret string) error {
@@ -217,10 +264,23 @@ func registerOrgWebhook(ctx context.Context, cfg *config.Config, ghClient *githu
 		return fmt.Errorf("saving config: %w", err)
 	}
 
-	fmt.Printf("Organization webhook registered successfully!\n")
-	fmt.Printf("  Organization: %s\n", org)
-	fmt.Printf("  Webhook ID:   %d\n", reg.ID)
-	fmt.Printf("  URL:          %s\n", webhookURL)
+	fmt.Println()
+	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
+	fmt.Println("│  Organization webhook registered successfully!             │")
+	fmt.Println("├─────────────────────────────────────────────────────────────┤")
+	fmt.Printf("│  Organization: %-44s │\n", org)
+	fmt.Printf("│  Webhook ID:   %-44d │\n", reg.ID)
+	fmt.Printf("│  URL:          %-44s │\n", truncateURL(webhookURL, 44))
+	fmt.Println("└─────────────────────────────────────────────────────────────┘")
+
+	if usingFunnel {
+		fmt.Println()
+		fmt.Println("📌 Next step: Start the webhook server with Tailscale Funnel:")
+		fmt.Println()
+		fmt.Println("   gale webhook --funnel")
+		fmt.Println()
+		fmt.Println("   The webhook will only receive events when the server is running.")
+	}
 
 	return nil
 }
