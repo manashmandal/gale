@@ -30,9 +30,10 @@ const (
 )
 
 var runnerChecksums = map[string]string{
-	"osx-arm64": "e7515e45f6de15e37e6f1667bb2f962fb535a86689af1f9b219860300d06de1b",
-	"osx-x64":   "40a32b7b87e25b76b595e201e0af376fcb1c3b7838fe21452909756090473ea9",
-	"linux-x64": "fb28a1c3715e9a6b286f63e71de6eb2a6ea66a7cd1a22e9f0efa3a3d7f6e9f9e",
+	"osx-arm64":   "e7515e45f6de15e37e6f1667bb2f962fb535a86689af1f9b219860300d06de1b",
+	"osx-x64":     "40a32b7b87e25b76b595e201e0af376fcb1c3b7838fe21452909756090473ea9",
+	"linux-x64":   "af5c33fa94f3cc33b8e97937939136a6b04197e6dadfcfb3b6e33ae1bf41e79a",
+	"linux-arm64": "9cb43527912086c7c8fb4119cb06409fcbcbd6f93a2d8507f30b07c495620f5c",
 }
 
 type Runner struct {
