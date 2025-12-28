@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/manashmandal/gale/internal/config"
 	"github.com/spf13/cobra"
@@ -150,6 +151,7 @@ func runRepoAdd(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Printf("Now monitoring %d repo(s)\n", len(cfg.GetRepos()))
 
+	restartWebhookIfRunning()
 	return nil
 }
 
@@ -201,6 +203,7 @@ func runRepoRemove(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nNow monitoring %d repo(s)\n", len(remaining))
 	}
 
+	restartWebhookIfRunning()
 	return nil
 }
 
@@ -224,6 +227,7 @@ func runRepoClear(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("Cleared repo list - now monitoring ALL repos")
+	restartWebhookIfRunning()
 	return nil
 }
 
@@ -267,6 +271,7 @@ func runRepoSet(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  - %s\n", repo)
 	}
 
+	restartWebhookIfRunning()
 	return nil
 }
 
@@ -278,4 +283,27 @@ func isRepoInList(repos []string, repo string) bool {
 		}
 	}
 	return false
+}
+
+// restartWebhookIfRunning restarts the webhook daemon if it's currently running
+// This ensures config changes are picked up immediately
+func restartWebhookIfRunning() {
+	pid, running := getWebhookPid()
+	if !running {
+		return
+	}
+
+	fmt.Println()
+	fmt.Printf("Restarting webhook daemon (PID: %d) to apply changes...\n", pid)
+	if _, err := stopWebhookProcess(); err != nil {
+		fmt.Printf("Warning: failed to stop webhook: %v\n", err)
+		return
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	webhookDaemonMode = true
+	if err := startWebhookDaemon(); err != nil {
+		fmt.Printf("Warning: failed to restart webhook: %v\n", err)
+		fmt.Println("Please restart manually with: gale webhook restart")
+	}
 }

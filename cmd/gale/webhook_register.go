@@ -193,8 +193,10 @@ func registerRepoWebhook(ctx context.Context, cfg *config.Config, ghClient *gith
 		Type:      "repo",
 	})
 
+	repoAdded := false
 	if !noAddRepo && !cfg.IsRepoMonitored(repoName) {
 		cfg.AddRepo(repoName)
+		repoAdded = true
 		fmt.Printf("Added %s to monitored repos\n", repoName)
 	}
 
@@ -210,6 +212,25 @@ func registerRepoWebhook(ctx context.Context, cfg *config.Config, ghClient *gith
 	fmt.Printf("│  Webhook ID: %-47d │\n", reg.ID)
 	fmt.Printf("│  URL:        %-47s │\n", truncateURL(webhookURL, 47))
 	fmt.Println("└─────────────────────────────────────────────────────────────┘")
+
+	// If webhook daemon is running and we added a new repo, restart it to pick up the change
+	if repoAdded {
+		if pid, running := getWebhookPid(); running {
+			fmt.Println()
+			fmt.Printf("Restarting webhook daemon (PID: %d) to apply changes...\n", pid)
+			if _, err := stopWebhookProcess(); err != nil {
+				fmt.Printf("Warning: failed to stop webhook: %v\n", err)
+			} else {
+				time.Sleep(500 * time.Millisecond)
+				webhookDaemonMode = true
+				if err := startWebhookDaemon(); err != nil {
+					fmt.Printf("Warning: failed to restart webhook: %v\n", err)
+					fmt.Println("Please restart manually with: gale webhook restart")
+				}
+			}
+			return nil
+		}
+	}
 
 	if usingFunnel {
 		fmt.Println()
@@ -272,6 +293,23 @@ func registerOrgWebhook(ctx context.Context, cfg *config.Config, ghClient *githu
 	fmt.Printf("│  Webhook ID:   %-44d │\n", reg.ID)
 	fmt.Printf("│  URL:          %-44s │\n", truncateURL(webhookURL, 44))
 	fmt.Println("└─────────────────────────────────────────────────────────────┘")
+
+	// Org webhooks monitor all repos, so restart daemon to ensure it's using latest config
+	if pid, running := getWebhookPid(); running {
+		fmt.Println()
+		fmt.Printf("Restarting webhook daemon (PID: %d) to apply changes...\n", pid)
+		if _, err := stopWebhookProcess(); err != nil {
+			fmt.Printf("Warning: failed to stop webhook: %v\n", err)
+		} else {
+			time.Sleep(500 * time.Millisecond)
+			webhookDaemonMode = true
+			if err := startWebhookDaemon(); err != nil {
+				fmt.Printf("Warning: failed to restart webhook: %v\n", err)
+				fmt.Println("Please restart manually with: gale webhook restart")
+			}
+		}
+		return nil
+	}
 
 	if usingFunnel {
 		fmt.Println()
