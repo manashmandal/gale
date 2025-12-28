@@ -4,7 +4,7 @@ Gale uses a YAML configuration file with environment variable expansion.
 
 ## Configuration File
 
-The default config file is `config.yaml` in the current directory. Use `-c` to specify a custom path:
+The default config file is `~/.gale/config.yaml`. Use `-c` to specify a custom path:
 
 ```bash
 gale start -c /etc/gale/config.yaml
@@ -13,7 +13,9 @@ gale start -c /etc/gale/config.yaml
 ## Full Configuration Reference
 
 ```yaml
-# config.yaml
+# ~/.gale/config.yaml
+version: "1"                  # Config version (for migrations)
+
 github:
   token: ${GITHUB_TOKEN}
   owner: ${GITHUB_OWNER}
@@ -97,6 +99,33 @@ gale config set log_level debug
 # Show config file path
 gale config path
 ```
+
+## Runner Labels
+
+The `runner.labels` setting determines which jobs Gale will pick up. Jobs with any matching label in their `runs-on` field will be handled by Gale runners.
+
+**Manage labels via CLI:**
+```bash
+gale labels                  # List current labels
+gale labels add docker       # Add a new label
+gale labels remove docker    # Remove a label
+```
+
+**Example workflow:**
+```yaml
+# This job will be picked up if 'gale-linux' is in your labels
+jobs:
+  build:
+    runs-on: gale-linux
+    steps:
+      - uses: actions/checkout@v4
+```
+
+**Default labels:**
+- `gale`
+- `self-hosted`
+- `linux`
+- `x64`
 
 ## Warm Pool
 

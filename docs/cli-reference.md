@@ -4,10 +4,10 @@ Complete reference for all Gale commands.
 
 ## Global Flags
 
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--config` | `-c` | Path to config file |
-| `--log-level` | `-l` | Log level (debug, info, warn, error) |
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config` | `-c` | `~/.gale/config.yaml` | Path to config file |
+| `--log-level` | `-l` | `info` | Log level (debug, info, warn, error) |
 
 ## Commands
 
@@ -39,8 +39,20 @@ Start webhook server for event-driven scaling.
 gale webhook                 # Start webhook server
 gale webhook --port 9000     # Use custom port
 gale webhook --funnel        # Use Tailscale Funnel
+gale webhook --hostname my-gale  # Custom Tailscale hostname
 gale webhook --daemon        # Run in background
 gale webhook -l debug        # Enable debug logging
+```
+
+**Subcommands:**
+
+```bash
+gale webhook register <repo>  # Register webhook on GitHub repo
+gale webhook register --org   # Register org-level webhook
+gale webhook list             # List registered webhooks
+gale webhook unregister <repo> # Remove a webhook
+gale webhook stop             # Stop webhook daemon
+gale webhook restart          # Restart webhook daemon
 ```
 
 ### `gale status`
@@ -89,6 +101,25 @@ gale pool                    # Show current warm pool size
 gale pool 3                  # Keep 3 runners always running
 gale pool 0                  # Scale to zero when idle
 ```
+
+### `gale labels`
+
+Manage runner labels (runs-on).
+
+```bash
+gale labels                  # List current labels
+gale labels add <label>      # Add a new label
+gale labels remove <label>   # Remove a label
+```
+
+**Examples:**
+```bash
+gale labels add docker       # Accept jobs with runs-on: docker
+gale labels add gpu-runner   # Accept jobs with runs-on: gpu-runner
+gale labels remove docker    # Stop accepting runs-on: docker
+```
+
+Jobs with any configured label in their `runs-on` field will be picked up by Gale runners.
 
 ### `gale repo`
 
