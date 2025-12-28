@@ -57,6 +57,7 @@ Setup (Tailscale Funnel - recommended):
 Example:
   gale webhook
   gale webhook --port 9000
+  gale webhook --mode native         # Use native runners instead of Docker
   gale webhook --funnel              # Use Tailscale Funnel (hostname: gale-<machine>)
   gale webhook --funnel --hostname my-gale  # Custom hostname
   gale webhook --funnel --daemon     # Run in background
@@ -72,6 +73,7 @@ var (
 	requireSignature  bool
 	registerOnStart   string
 	skipValidation    bool
+	runnerMode        string
 )
 
 func getWebhookPidFile() string {
@@ -106,12 +108,14 @@ func init() {
 	webhookCmd.Flags().BoolVar(&requireSignature, "require-signature", false, "require webhook signature verification (recommended for production)")
 	webhookCmd.Flags().StringVar(&registerOnStart, "register", "", "register webhook on repo before starting (requires --funnel)")
 	webhookCmd.Flags().BoolVar(&skipValidation, "skip-validation", false, "skip public URL validation (use if validation fails but funnel works)")
+	webhookCmd.Flags().StringVar(&runnerMode, "mode", "", "runner mode: 'docker' or 'native' (overrides config)")
 
 	webhookRestartCmd.Flags().IntVarP(&webhookPort, "port", "p", 0, "port to listen on (default 8080)")
 	webhookRestartCmd.Flags().BoolVar(&useFunnel, "funnel", false, "use Tailscale Funnel for public HTTPS endpoint")
 	webhookRestartCmd.Flags().StringVar(&funnelHostname, "hostname", "", "Tailscale hostname (default: gale-<machine-hostname>)")
 	webhookRestartCmd.Flags().BoolVar(&requireSignature, "require-signature", false, "require webhook signature verification (recommended for production)")
 	webhookRestartCmd.Flags().StringVar(&registerOnStart, "register", "", "register webhook on repo before starting (requires --funnel)")
+	webhookRestartCmd.Flags().StringVar(&runnerMode, "mode", "", "runner mode: 'docker' or 'native' (overrides config)")
 
 	webhookCmd.AddCommand(webhookStopCmd)
 	webhookCmd.AddCommand(webhookRestartCmd)
@@ -230,17 +234,27 @@ func startWebhookDaemon() error {
 		hostname = getDefaultFunnelHostname()
 	}
 
+	// Determine effective runner mode
+	effectiveMode := cfg.Runner.Mode
+	if runnerMode != "" {
+		effectiveMode = runnerMode
+	}
+	if effectiveMode == "" {
+		effectiveMode = "docker"
+	}
+
 	fmt.Println()
 	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
 	fmt.Println("│  Gale Webhook Server - Starting in Daemon Mode             │")
 	fmt.Println("├─────────────────────────────────────────────────────────────┤")
 	fmt.Printf("│  Config:      %-46s │\n", cfgFile)
 	fmt.Printf("│  Log Level:   %-46s │\n", cfg.LogLevel)
+	fmt.Printf("│  Runner Mode: %-46s │\n", effectiveMode)
 	if useFunnel {
-		fmt.Printf("│  Mode:        %-46s │\n", "Tailscale Funnel")
+		fmt.Printf("│  Server:      %-46s │\n", "Tailscale Funnel")
 		fmt.Printf("│  Hostname:    %-46s │\n", hostname)
 	} else {
-		fmt.Printf("│  Mode:        %-46s │\n", "Local Server")
+		fmt.Printf("│  Server:      %-46s │\n", "Local Server")
 		fmt.Printf("│  Port:        %-46d │\n", port)
 	}
 	fmt.Printf("│  Log File:    %-46s │\n", GetLogFilePath())
@@ -263,6 +277,9 @@ func startWebhookDaemon() error {
 	}
 	if logLevel != "" {
 		args = append(args, "--log-level", logLevel)
+	}
+	if runnerMode != "" {
+		args = append(args, "--mode", runnerMode)
 	}
 
 	// Get the executable path
@@ -329,6 +346,14 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 
 	if webhookPort > 0 {
 		cfg.Webhook.Port = webhookPort
+	}
+
+	// Override runner mode if specified
+	if runnerMode != "" {
+		if runnerMode != "docker" && runnerMode != "native" {
+			return fmt.Errorf("invalid runner mode %q: must be 'docker' or 'native'", runnerMode)
+		}
+		cfg.Runner.Mode = runnerMode
 	}
 
 	// Check signature requirement
