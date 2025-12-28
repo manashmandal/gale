@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	registerOrg bool
-	registerURL string
-	noAddRepo   bool
+	registerOrg      bool
+	registerURL      string
+	noAddRepo        bool
+	registerHostname string
 )
 
 var webhookRegisterCmd = &cobra.Command{
@@ -64,6 +65,7 @@ func init() {
 	webhookRegisterCmd.Flags().BoolVar(&registerOrg, "org", false, "register organization-level webhook")
 	webhookRegisterCmd.Flags().StringVar(&registerURL, "url", "", "webhook URL (required if not using --funnel)")
 	webhookRegisterCmd.Flags().BoolVar(&noAddRepo, "no-add-repo", false, "don't automatically add repo to watchlist")
+	webhookRegisterCmd.Flags().StringVar(&registerHostname, "hostname", "", "Tailscale hostname for funnel URL (default: gale-<machine-hostname>)")
 
 	webhookUnregisterCmd.Flags().BoolVar(&registerOrg, "org", false, "unregister organization-level webhook")
 
@@ -90,12 +92,18 @@ func runWebhookRegister(cmd *cobra.Command, args []string) error {
 
 	webhookURL := registerURL
 	if webhookURL == "" {
-		dnsName, err := getTailscaleDNSName(ctx)
+		// Use the same hostname that webhook --funnel will use
+		hostname := registerHostname
+		if hostname == "" {
+			hostname = getDefaultFunnelHostname()
+		}
+		dnsName, err := getTailscaleDNSName(ctx, hostname)
 		if err != nil {
 			return fmt.Errorf("detecting Tailscale URL: %w\n\nUse --url to specify the webhook URL manually", err)
 		}
 		webhookURL = fmt.Sprintf("https://%s/webhook", dnsName)
 		fmt.Printf("Using Tailscale Funnel URL: %s\n", webhookURL)
+		fmt.Printf("  (hostname: %s)\n", hostname)
 	}
 
 	if !strings.HasSuffix(webhookURL, "/webhook") {
@@ -307,7 +315,7 @@ func runWebhookUnregister(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func getTailscaleDNSName(ctx context.Context) (string, error) {
+func getTailscaleDNSName(ctx context.Context, customHostname string) (string, error) {
 	lc := tailscale.LocalClient{}
 	status, err := lc.Status(ctx)
 	if err != nil {
@@ -325,6 +333,25 @@ func getTailscaleDNSName(ctx context.Context) (string, error) {
 
 	// Remove trailing dot from DNS name
 	dnsName = strings.TrimSuffix(dnsName, ".")
+
+	// If custom hostname provided, construct the funnel URL using it
+	// The format is: {hostname}.{tailnet}.ts.net
+	// We need to replace the machine hostname part with the custom hostname
+	if customHostname != "" {
+		// Extract tailnet from the DNS name (everything after the first dot)
+		parts := strings.SplitN(dnsName, ".", 2)
+		if len(parts) < 2 {
+			return "", fmt.Errorf("unexpected DNS name format: %s", dnsName)
+		}
+		tailnet := parts[1]
+
+		// Sanitize custom hostname for DNS (lowercase, replace invalid chars with hyphens)
+		sanitizedHostname := strings.ToLower(customHostname)
+		sanitizedHostname = strings.ReplaceAll(sanitizedHostname, ".", "-")
+		sanitizedHostname = strings.ReplaceAll(sanitizedHostname, " ", "-")
+
+		dnsName = fmt.Sprintf("%s.%s", sanitizedHostname, tailnet)
+	}
 
 	return dnsName, nil
 }
