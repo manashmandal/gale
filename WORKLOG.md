@@ -1,5 +1,29 @@
 # Work Log
 
+## 2025-12-28 10:26 UTC - Duplicate Webhook Race Condition Fix
+
+### Issue
+Duplicate "queued" webhooks from GitHub (retries or race conditions) could spawn multiple runners for the same job, leaving orphaned/dangling containers.
+
+### Root Cause
+`handleQueued` reserved a slot with a placeholder but didn't check if a runner was already spawned for that job ID before proceeding.
+
+### Fix
+Added check at the start of slot reservation:
+```go
+if _, exists := h.activeRunners[event.WorkflowJob.ID]; exists {
+    h.mu.Unlock()
+    h.logger.Debug("runner already spawned for job", "job_id", event.WorkflowJob.ID)
+    return
+}
+```
+
+### Files Modified
+- `internal/webhook/handler.go` - Added duplicate check in `handleQueued`
+- `internal/webhook/handler_test.go` - Added `TestServeHTTP_DuplicateQueuedWebhook`
+
+---
+
 ## 2025-12-28 04:30 UTC - Native Runner Mode for macOS
 
 ### Feature
