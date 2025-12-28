@@ -123,7 +123,12 @@ func TestVerifySignature(t *testing.T) {
 }
 
 func TestRequiresGaleRunner(t *testing.T) {
-	h := &Handler{}
+	cfg := &config.Config{
+		Runner: config.RunnerConfig{
+			Labels: []string{"gale", "gale-linux"},
+		},
+	}
+	h := &Handler{cfg: cfg}
 
 	tests := []struct {
 		name     string
@@ -148,6 +153,11 @@ func TestRequiresGaleRunner(t *testing.T) {
 		{
 			name:     "case insensitive self-hosted",
 			labels:   []string{"Self-Hosted"},
+			expected: true,
+		},
+		{
+			name:     "has gale-linux label",
+			labels:   []string{"gale-linux"},
 			expected: true,
 		},
 		{

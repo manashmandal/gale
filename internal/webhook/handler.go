@@ -339,9 +339,16 @@ func (h *Handler) gracefulShutdown(containerID string, jobID int64) {
 	_ = h.docker.RemoveRunner(ctx, containerID)
 }
 
-func (h *Handler) requiresGaleRunner(labels []string) bool {
-	for _, label := range labels {
-		if strings.EqualFold(label, "gale") || strings.EqualFold(label, "self-hosted") {
+func (h *Handler) requiresGaleRunner(jobLabels []string) bool {
+	configuredLabels := h.cfg.Runner.Labels
+	for _, jobLabel := range jobLabels {
+		for _, configuredLabel := range configuredLabels {
+			if strings.EqualFold(jobLabel, configuredLabel) {
+				return true
+			}
+		}
+		// Also match "self-hosted" as a fallback for standard self-hosted runners
+		if strings.EqualFold(jobLabel, "self-hosted") {
 			return true
 		}
 	}
