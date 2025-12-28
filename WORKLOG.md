@@ -1,5 +1,27 @@
 # Work Log
 
+## 2025-12-28 10:45 UTC - Config Caching Fix (Auto-Restart Daemon)
+
+### Issue
+When webhook daemon was running and user registered a new repo, the running handler still had old config in memory. This caused "repo not registered" errors until manual restart.
+
+### Root Cause
+The webhook handler holds a reference to the config object loaded at startup. Config changes saved to disk by other commands (register, repo add, etc.) weren't visible to the running handler.
+
+### Fix
+Auto-restart the webhook daemon when config changes are made via:
+- `gale webhook register`
+- `gale repo add`
+- `gale repo remove`
+- `gale repo set`
+- `gale repo clear`
+
+### Files Modified
+- `cmd/gale/webhook_register.go` - Restart daemon after registration
+- `cmd/gale/repo.go` - Added `restartWebhookIfRunning()` helper, call it after repo changes
+
+---
+
 ## 2025-12-28 10:26 UTC - Duplicate Webhook Race Condition Fix
 
 ### Issue
