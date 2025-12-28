@@ -42,12 +42,12 @@ type WorkflowJobEvent struct {
 }
 
 type Handler struct {
-	cfg          *config.Config
-	runner       runner.Client
-	docker       docker.DockerClient // Deprecated: for backward compatibility with tests
-	appClient    *github.AppClient   // nil if using PAT mode
-	logger       *slog.Logger
-	secret       string
+	cfg       *config.Config
+	runner    runner.Client
+	docker    docker.DockerClient // Deprecated: for backward compatibility with tests
+	appClient *github.AppClient   // nil if using PAT mode
+	logger    *slog.Logger
+	secret    string
 
 	mu            sync.Mutex
 	activeRunners map[int64]string // jobID -> runnerID (containerID or native runner ID)

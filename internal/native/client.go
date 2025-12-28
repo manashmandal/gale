@@ -44,13 +44,13 @@ type Runner struct {
 }
 
 type RunnerConfig struct {
-	Token       string
-	RepoURL     string
-	OrgName     string
-	Scope       string
-	Labels      []string
-	Env         map[string]string
-	RunnerName  string
+	Token      string
+	RepoURL    string
+	OrgName    string
+	Scope      string
+	Labels     []string
+	Env        map[string]string
+	RunnerName string
 }
 
 type Client struct {

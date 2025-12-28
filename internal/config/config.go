@@ -65,8 +65,8 @@ type ScalerConfig struct {
 }
 
 type RunnerConfig struct {
-	Mode        string            `yaml:"mode"`         // "docker" or "native" (default: docker)
-	Image       string            `yaml:"image"`        // Docker image (docker mode only)
+	Mode        string            `yaml:"mode"`  // "docker" or "native" (default: docker)
+	Image       string            `yaml:"image"` // Docker image (docker mode only)
 	Labels      []string          `yaml:"labels"`
 	Env         map[string]string `yaml:"env"`
 	NetworkMode string            `yaml:"network_mode"` // Docker network mode (docker mode only)
