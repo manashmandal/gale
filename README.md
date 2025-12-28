@@ -21,6 +21,12 @@
 
 ---
 
+> **AI-Generated Code Disclaimer**
+>
+> This codebase is generated almost entirely using [Claude Code](https://claude.com/code) with Claude Opus 4.5 and Haiku 4.5. The code is largely unreviewed but features are continuously tested by the maintainer ([@manashmandal](https://github.com/manashmandal)). Use at your own discretion.
+
+---
+
 ## TL;DR
 
 ```bash
