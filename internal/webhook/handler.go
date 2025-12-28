@@ -49,6 +49,8 @@ type Handler struct {
 
 	mu            sync.Mutex
 	activeRunners map[int64]string // jobID -> containerID
+
+	cleanupDone chan struct{}
 }
 
 type HandlerOptions struct {
@@ -111,7 +113,48 @@ func NewHandlerWithDocker(cfg *config.Config, logger *slog.Logger, dockerClient 
 }
 
 func (h *Handler) Close() error {
+	// Stop cleanup goroutine if running
+	if h.cleanupDone != nil {
+		close(h.cleanupDone)
+	}
 	return h.docker.Close()
+}
+
+func (h *Handler) StartCleanup(ctx context.Context) {
+	h.cleanupDone = make(chan struct{})
+
+	// Cleanup orphaned containers from previous runs on startup
+	h.cleanupExitedContainers()
+
+	// Start periodic cleanup goroutine
+	go h.cleanupLoop(ctx)
+}
+
+func (h *Handler) cleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-h.cleanupDone:
+			return
+		case <-ticker.C:
+			h.cleanupExitedContainers()
+		}
+	}
+}
+
+func (h *Handler) cleanupExitedContainers() {
+	cleaned, err := h.docker.CleanupExitedRunners(context.Background())
+	if err != nil {
+		h.logger.Debug("cleanup error", "error", err)
+		return
+	}
+	if cleaned > 0 {
+		h.logger.Info("cleaned up exited containers", "count", cleaned)
+	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -192,18 +235,20 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 		return
 	}
 
-	// Check runner limit
+	// Check runner limit and reserve slot atomically
 	h.mu.Lock()
 	activeCount := len(h.activeRunners)
-	h.mu.Unlock()
-
 	if activeCount >= h.cfg.Scaler.MaxRunners {
+		h.mu.Unlock()
 		h.logger.Warn("at max runners, cannot spawn more",
 			"active", activeCount,
 			"max", h.cfg.Scaler.MaxRunners,
 		)
 		return
 	}
+	// Reserve slot by adding placeholder (prevents race condition)
+	h.activeRunners[event.WorkflowJob.ID] = ""
+	h.mu.Unlock()
 
 	// Get token - either from GitHub App or PAT
 	var token string
@@ -211,13 +256,16 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 		// GitHub App mode - get installation token
 		if event.Installation.ID == 0 {
 			h.logger.Error("no installation ID in webhook payload")
+			h.releaseSlot(event.WorkflowJob.ID)
 			return
 		}
 
 		var err error
-		token, err = h.appClient.GetInstallationToken(ctx, event.Installation.ID)
+		// Use background context for API calls - don't tie to HTTP request lifecycle
+		token, err = h.appClient.GetInstallationToken(context.Background(), event.Installation.ID)
 		if err != nil {
 			h.logger.Error("failed to get installation token", "error", err, "installation_id", event.Installation.ID)
+			h.releaseSlot(event.WorkflowJob.ID)
 			return
 		}
 		h.logger.Debug("got installation token", "installation_id", event.Installation.ID)
@@ -226,7 +274,7 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 		token = h.cfg.GitHub.Token
 	}
 
-	// Spawn runner
+	// Spawn runner - use background context to avoid cancellation from HTTP timeout
 	runnerCfg := docker.RunnerConfig{
 		Image:       h.cfg.Runner.Image,
 		Token:       token,
@@ -237,12 +285,14 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 		Scope:       "repo",
 	}
 
-	runner, err := h.docker.CreateRunner(ctx, runnerCfg)
+	runner, err := h.docker.CreateRunner(context.Background(), runnerCfg)
 	if err != nil {
 		h.logger.Error("failed to create runner", "error", err)
+		h.releaseSlot(event.WorkflowJob.ID)
 		return
 	}
 
+	// Update slot with actual container ID
 	h.mu.Lock()
 	h.activeRunners[event.WorkflowJob.ID] = runner.ContainerID
 	h.mu.Unlock()
@@ -257,6 +307,12 @@ func (h *Handler) handleQueued(ctx context.Context, event *WorkflowJobEvent) {
 
 	// Monitor for early container exit (indicates registration failure)
 	go h.monitorRunnerStartup(runner.ContainerID, event.WorkflowJob.ID, event.WorkflowJob.Name)
+}
+
+func (h *Handler) releaseSlot(jobID int64) {
+	h.mu.Lock()
+	delete(h.activeRunners, jobID)
+	h.mu.Unlock()
 }
 
 func (h *Handler) monitorRunnerStartup(containerID string, jobID int64, jobName string) {

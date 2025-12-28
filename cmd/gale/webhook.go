@@ -349,6 +349,13 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 	}
 	defer handler.Close()
 
+	// Graceful shutdown context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start background cleanup for exited containers
+	handler.StartCleanup(ctx)
+
 	mux := http.NewServeMux()
 	mux.Handle("/webhook", handler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -356,9 +363,6 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(w, "OK - %d active runners\n", handler.GetActiveRunnerCount())
 	})
 
-	// Graceful shutdown context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	defer removeWebhookPid()
 
 	sigCh := make(chan os.Signal, 1)

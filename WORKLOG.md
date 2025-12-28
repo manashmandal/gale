@@ -1,5 +1,32 @@
 # Work Log
 
+## 2025-12-28 03:15 UTC - Daemon Mode Reliability Fixes
+
+### Issue
+Webhooks were sometimes received but no runner/container was started when running in daemon/background mode. Stopped containers were also not being cleaned up, requiring restart in foreground mode.
+
+### Root Causes
+1. **HTTP Request Context Cancellation**: `handleQueued` used `r.Context()` (HTTP request context) for Docker operations. With `WriteTimeout: 10s`, Docker container creation could be cancelled if it took too long.
+
+2. **Race Condition in Runner Limit**: The max runner check released the mutex before container creation, allowing multiple concurrent requests to exceed the limit.
+
+3. **No Periodic Cleanup**: Exited containers were only cleaned up when a "completed" webhook was received. If daemon restarted, orphaned containers remained.
+
+### Fixes
+1. **Use Background Context**: Changed Docker and GitHub API calls to use `context.Background()` instead of HTTP request context.
+
+2. **Atomic Slot Reservation**: Reserve slot in `activeRunners` map before releasing mutex, preventing race conditions.
+
+3. **Periodic Cleanup Goroutine**: Added `StartCleanup()` method that:
+   - Cleans up orphaned containers on startup
+   - Runs cleanup every 30 seconds in background
+
+### Files Modified
+- `internal/webhook/handler.go` - All three fixes
+- `cmd/gale/webhook.go` - Call `StartCleanup()` on handler init
+
+---
+
 ## 2025-12-28 02:30 UTC - Major UX Improvements and Config Overhaul
 
 ### Features Added
