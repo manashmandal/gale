@@ -1,5 +1,28 @@
 # Work Log
 
+## 2025-12-28 - Native Runner Process Group Isolation
+
+### Issue
+Native runners were crashing during CI step transitions, specifically during "Post Setup Go" cleanup steps. The runner would die before completing post-job steps.
+
+### Root Cause
+Native runners were started as direct child processes of the Gale daemon without their own process group. Signals sent to the Gale process group could inadvertently terminate the runner during job execution.
+
+### Fix
+Added process group isolation by setting `Setpgid: true` when starting the runner:
+```go
+runCmd.SysProcAttr = &syscall.SysProcAttr{
+    Setpgid: true,
+}
+```
+
+This makes the runner start in its own process group, isolated from the Gale daemon. Signals to Gale no longer propagate to the runner.
+
+### Files Modified
+- `internal/native/client.go` - Added `SysProcAttr` with `Setpgid: true`
+
+---
+
 ## 2025-12-28 10:45 UTC - Config Caching Fix (Auto-Restart Daemon)
 
 ### Issue
