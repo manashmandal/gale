@@ -23,11 +23,9 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Run tests
-        run: go test -v -coverprofile=coverage.out ./internal/...
-
-      - name: Check coverage
+      - name: Run tests with coverage check
         run: |
+          go test -v -coverprofile=coverage.out ./internal/...
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           if awk "BEGIN {exit !($COVERAGE < 65)}"; then
