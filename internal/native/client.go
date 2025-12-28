@@ -2,10 +2,12 @@ package native
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -135,6 +137,12 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		return nil, fmt.Errorf("ensuring runner binary: %w", err)
 	}
 
+	// Get runner registration token from GitHub API
+	registrationToken, err := getRegistrationToken(ctx, cfg.Token, cfg.RepoURL, cfg.OrgName, cfg.Scope)
+	if err != nil {
+		return nil, fmt.Errorf("getting registration token: %w", err)
+	}
+
 	runnerID := uuid.New().String()[:8]
 	runnerName := cfg.RunnerName
 	if runnerName == "" {
@@ -155,7 +163,7 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		"--unattended",
 		"--ephemeral",
 		"--name", runnerName,
-		"--token", cfg.Token,
+		"--token", registrationToken,
 		"--labels", strings.Join(cfg.Labels, ","),
 		"--work", "_work",
 		"--replace",
@@ -476,4 +484,55 @@ func copyDir(src, dest string) error {
 		_, err = io.Copy(destFile, srcFile)
 		return err
 	})
+}
+
+type registrationTokenResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+func getRegistrationToken(ctx context.Context, token, repoURL, orgName, scope string) (string, error) {
+	var apiURL string
+
+	if scope == "org" && orgName != "" {
+		apiURL = fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners/registration-token", orgName)
+	} else {
+		// Extract owner/repo from URL like https://github.com/owner/repo
+		repoURL = strings.TrimSuffix(repoURL, "/")
+		repoURL = strings.TrimSuffix(repoURL, ".git")
+		parts := strings.Split(repoURL, "/")
+		if len(parts) < 2 {
+			return "", fmt.Errorf("invalid repo URL: %s", repoURL)
+		}
+		owner := parts[len(parts)-2]
+		repo := parts[len(parts)-1]
+		apiURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runners/registration-token", owner, repo)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader([]byte{}))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to get registration token: %s (status %d)", string(body), resp.StatusCode)
+	}
+
+	var tokenResp registrationTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", fmt.Errorf("decoding response: %w", err)
+	}
+
+	return tokenResp.Token, nil
 }

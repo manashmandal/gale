@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -499,6 +500,25 @@ func TestClient_StopRunner_WithRunningProcess(t *testing.T) {
 	err := client.StopRunner(context.Background(), "r1", 1)
 	if err != nil {
 		t.Errorf("StopRunner() error = %v", err)
+	}
+}
+
+func TestGetRegistrationToken_InvalidURL(t *testing.T) {
+	_, err := getRegistrationToken(context.Background(), "token", "invalid-url", "", "repo")
+	if err == nil {
+		t.Error("expected error for invalid URL")
+	}
+}
+
+func TestGetRegistrationToken_ExtractsOwnerRepo(t *testing.T) {
+	// This will fail with auth error but tests URL parsing
+	_, err := getRegistrationToken(context.Background(), "invalid-token", "https://github.com/owner/repo", "", "repo")
+	if err == nil {
+		t.Error("expected error with invalid token")
+	}
+	// Should not error on URL parsing, only on API call
+	if strings.Contains(err.Error(), "invalid repo URL") {
+		t.Errorf("URL parsing should succeed, got: %v", err)
 	}
 }
 
