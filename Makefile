@@ -105,10 +105,10 @@ docker-build:
 	@echo "Building Docker image..."
 	docker build -t gale:$(VERSION) .
 
-## debug-logs: Show gale webhook server logs
-debug-logs:
+## debug-logs: Show gale webhook server logs (uses local build)
+debug-logs: build
 	@echo "=== Gale Logs (last 50 lines) ==="
-	@gale logs 2>&1 | tail -50 || echo "No logs found or gale not running"
+	@./$(BUILD_DIR)/$(BINARY_NAME) logs 2>&1 | tail -50 || echo "No logs found or gale not running"
 
 ## debug-runner-logs: Show native runner logs
 debug-runner-logs:
@@ -121,10 +121,10 @@ debug-runner-logs:
 		fi \
 	done 2>/dev/null || echo "No runner logs found"
 
-## debug-runner-status: Show runner exit status and signals
-debug-runner-status:
+## debug-runner-status: Show runner exit status and signals (uses local build)
+debug-runner-status: build
 	@echo "=== Runner Status Debug ==="
-	@gale logs 2>&1 | grep -E "(DEBUG|exited|signal|graceful|WARN|ERROR)" | tail -30 || echo "No debug info found"
+	@./$(BUILD_DIR)/$(BINARY_NAME) logs 2>&1 | grep -E "(DEBUG|exited|signal|graceful|WARN|ERROR)" | tail -30 || echo "No debug info found"
 
 ## debug-processes: Show gale-related processes
 debug-processes:
@@ -142,8 +142,8 @@ debug-cleanup:
 	@echo "=== Runner PIDs (from pgrep) ==="
 	@pgrep -fl "Runner\." 2>/dev/null || echo "No Runner processes"
 
-## debug-all: Run all debug commands and export to file
-debug-all:
+## debug-all: Run all debug commands and export to file (uses local build)
+debug-all: build
 	@echo "Collecting debug information..."
 	@mkdir -p .debug
 	@( \
@@ -152,13 +152,13 @@ debug-all:
 		echo "Host: $$(uname -a)"; \
 		echo ""; \
 		echo "=== Gale Version ==="; \
-		gale --version 2>&1 || echo "gale not found"; \
+		./$(BUILD_DIR)/$(BINARY_NAME) --version 2>&1 || echo "gale not found"; \
 		echo ""; \
 		echo "=== Gale Logs (last 100 lines) ==="; \
-		gale logs 2>&1 | tail -100 || echo "No logs found"; \
+		./$(BUILD_DIR)/$(BINARY_NAME) logs 2>&1 | tail -100 || echo "No logs found"; \
 		echo ""; \
 		echo "=== Runner Status Debug ==="; \
-		gale logs 2>&1 | grep -E "(DEBUG|exited|signal|graceful|WARN|ERROR|completed)" | tail -50 || echo "No debug info"; \
+		./$(BUILD_DIR)/$(BINARY_NAME) logs 2>&1 | grep -E "(DEBUG|exited|signal|graceful|WARN|ERROR|completed)" | tail -50 || echo "No debug info"; \
 		echo ""; \
 		echo "=== Native Runner Logs ==="; \
 		for log in ~/.gale/native-runners/work/*/runner.log; do \
