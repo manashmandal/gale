@@ -43,12 +43,8 @@ func newNativeClient(cfg *config.Config, logger *slog.Logger) (Client, error) {
 		return nil, fmt.Errorf("creating native client: %w", err)
 	}
 
-	logger.Info("ensuring runner binary is available")
-	if _, err := nativeClient.EnsureRunnerBinary(context.Background()); err != nil {
-		nativeClient.Close()
-		return nil, fmt.Errorf("ensuring runner binary: %w", err)
-	}
-
-	logger.Info("using native runner mode")
+	// Each runner downloads its own binary to its isolated directory
+	// No shared cache - eliminates race conditions during parallel runner creation
+	logger.Info("using native runner mode (each runner downloads its own binary)")
 	return NewNativeAdapter(nativeClient), nil
 }

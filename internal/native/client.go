@@ -100,43 +100,34 @@ func (c *Client) Close() error {
 	return nil
 }
 
-func (c *Client) EnsureRunnerBinary(ctx context.Context) (string, error) {
+// downloadAndExtractRunner downloads and extracts the runner binary directly to the target directory.
+// Each runner gets its own copy - no shared cache to avoid race conditions.
+func (c *Client) downloadAndExtractRunner(ctx context.Context, targetDir string) error {
 	arch := getRunnerArch()
 	if arch == "" {
-		return "", fmt.Errorf("unsupported platform: %s/%s", runtime.GOOS, runtime.GOARCH)
-	}
-
-	cacheDir := filepath.Join(c.baseDir, "cache", runnerVersion)
-	binaryPath := filepath.Join(cacheDir, "bin", "Runner.Listener")
-
-	if _, err := os.Stat(binaryPath); err == nil {
-		return cacheDir, nil
-	}
-
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return "", fmt.Errorf("creating cache dir: %w", err)
+		return fmt.Errorf("unsupported platform: %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
 	tarballName := fmt.Sprintf("actions-runner-%s-%s.tar.gz", arch, runnerVersion)
 	downloadURL := fmt.Sprintf("%s/v%s/%s", runnerBaseURL, runnerVersion, tarballName)
 
-	tarballPath := filepath.Join(cacheDir, tarballName)
+	tarballPath := filepath.Join(targetDir, tarballName)
 	if err := downloadFile(ctx, downloadURL, tarballPath); err != nil {
-		return "", fmt.Errorf("downloading runner: %w", err)
+		return fmt.Errorf("downloading runner: %w", err)
 	}
 
 	expectedChecksum := runnerChecksums[arch]
 	if err := verifyChecksum(tarballPath, expectedChecksum); err != nil {
 		os.Remove(tarballPath)
-		return "", fmt.Errorf("checksum verification failed: %w", err)
+		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
-	if err := extractTarGz(tarballPath, cacheDir); err != nil {
-		return "", fmt.Errorf("extracting runner: %w", err)
+	if err := extractTarGz(tarballPath, targetDir); err != nil {
+		return fmt.Errorf("extracting runner: %w", err)
 	}
 
 	os.Remove(tarballPath)
-	return cacheDir, nil
+	return nil
 }
 
 func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, error) {
@@ -147,32 +138,28 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		runnerName = fmt.Sprintf("gale-native-%s", runnerID)
 	}
 
-	// Each runner gets its own isolated directory - no shared state
+	// Each runner gets its own fully isolated directory - no shared cache
 	runnerDir := filepath.Join(c.baseDir, "work", runnerID)
-
-	runnerBinaryDir, err := c.EnsureRunnerBinary(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("ensuring runner binary: %w", err)
-	}
-
-	// Get runner registration token from GitHub API
-	registrationToken, err := getRegistrationToken(ctx, cfg.Token, cfg.RepoURL, cfg.OrgName, cfg.Scope)
-	if err != nil {
-		return nil, fmt.Errorf("getting registration token: %w", err)
-	}
 
 	if err := os.MkdirAll(runnerDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating runner dir: %w", err)
 	}
 
-	// Copy runner binary to this runner's isolated directory
-	if err := copyDir(runnerBinaryDir, runnerDir); err != nil {
+	// Download and extract runner directly to this runner's directory
+	// No shared cache - each runner is completely independent
+	if err := c.downloadAndExtractRunner(ctx, runnerDir); err != nil {
 		os.RemoveAll(runnerDir)
-		return nil, fmt.Errorf("copying runner files: %w", err)
+		return nil, fmt.Errorf("setting up runner binary: %w", err)
 	}
 
-	// Pre-create the _work directory structure for this runner instance.
-	// Each runner has its own _work/_temp directory, completely isolated.
+	// Get runner registration token from GitHub API
+	registrationToken, err := getRegistrationToken(ctx, cfg.Token, cfg.RepoURL, cfg.OrgName, cfg.Scope)
+	if err != nil {
+		os.RemoveAll(runnerDir)
+		return nil, fmt.Errorf("getting registration token: %w", err)
+	}
+
+	// Pre-create the _work directory structure for this runner instance
 	workDir := filepath.Join(runnerDir, "_work")
 	tempDir := filepath.Join(workDir, "_temp")
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
