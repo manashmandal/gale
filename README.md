@@ -370,3 +370,7 @@ MIT License
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
+
+---
+
+<sub>**Name Origin:** Gale is inspired by the [Gale Flame](https://godofwar.fandom.com/wiki/Gale_Flame) from God of War Ragnarök — a material that captures an eternal flame in swirling mystical winds. Similarly, this tool captures the power of your idle machines to fuel your CI/CD pipelines.</sub>
