@@ -30,3 +30,4 @@ config.local.yaml
 # GoReleaser
 dist/
 gale
+assets/node_modules/

@@ -255,6 +255,10 @@ func (c *Client) waitForCompletion(runner *Runner) {
 		}
 	}
 
+	exitTime := time.Now()
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] waitForCompletion: runner %s exited at %v (code=%d, err=%v)\n",
+		runner.ID, exitTime, exitCode, exitErr)
+
 	// Log exit information to the runner's log file before closing
 	if runner.logFile != nil {
 		if exitErr != nil {
@@ -268,7 +272,7 @@ func (c *Client) waitForCompletion(runner *Runner) {
 	c.mu.Lock()
 	if r, exists := c.runners[runner.ID]; exists {
 		r.Status = "exited"
-		r.ExitedAt = time.Now()
+		r.ExitedAt = exitTime
 	}
 	c.mu.Unlock()
 }
@@ -317,6 +321,9 @@ func (c *Client) RemoveRunner(ctx context.Context, runnerID string) error {
 		runner.logFile.Close()
 	}
 
+	// Log removal with stack trace hint
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] RemoveRunner called for %s, dir=%s\n", runnerID, runner.Dir)
+
 	return os.RemoveAll(runner.Dir)
 }
 
@@ -326,15 +333,22 @@ func (c *Client) CleanupExitedRunners(ctx context.Context) (int, error) {
 	now := time.Now()
 	for id, r := range c.runners {
 		if r.Status == "exited" && !r.ExitedAt.IsZero() {
-			if now.Sub(r.ExitedAt) >= cleanupGracePeriod {
+			elapsed := now.Sub(r.ExitedAt)
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] CleanupExitedRunners: runner %s status=%s elapsed=%v gracePeriod=%v willRemove=%v\n",
+				id, r.Status, elapsed, cleanupGracePeriod, elapsed >= cleanupGracePeriod)
+			if elapsed >= cleanupGracePeriod {
 				toRemove = append(toRemove, id)
 			}
+		} else if r.Status == "exited" {
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] CleanupExitedRunners: runner %s status=%s ExitedAt.IsZero=%v (skipping)\n",
+				id, r.Status, r.ExitedAt.IsZero())
 		}
 	}
 	c.mu.Unlock()
 
 	cleaned := 0
 	for _, id := range toRemove {
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] CleanupExitedRunners: removing runner %s\n", id)
 		if err := c.RemoveRunner(ctx, id); err == nil {
 			cleaned++
 		}
