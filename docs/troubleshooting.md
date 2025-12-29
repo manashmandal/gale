@@ -5,6 +5,7 @@
 ### Connection Timeout / SSL Handshake Errors
 
 **Symptoms:**
+
 - `curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL`
 - Connection hangs then times out
 - First request fails but subsequent requests work
@@ -22,6 +23,7 @@
 ### Funnel Not Accessible from Public Internet
 
 **Symptoms:**
+
 - Local curl via Tailscale internal IP works
 - Public curl via funnel ingress IP fails
 
@@ -50,6 +52,7 @@ curl --resolve "your-hostname.tail*.ts.net:443:$PUBLIC_IP" https://your-hostname
 ### Container Stuck / Not Terminating
 
 **Symptoms:**
+
 - Runner container keeps running after job completion
 - Multiple stale containers accumulate
 
@@ -58,6 +61,7 @@ curl --resolve "your-hostname.tail*.ts.net:443:$PUBLIC_IP" https://your-hostname
 ### Container Fails to Start
 
 **Symptoms:**
+
 - Job queued but never starts
 - Errors about Docker socket
 
@@ -68,3 +72,62 @@ curl --resolve "your-hostname.tail*.ts.net:443:$PUBLIC_IP" https://your-hostname
 2. **Image pull issues**: Check network connectivity and Docker Hub rate limits.
 
 3. **Resource constraints**: Ensure sufficient disk space and memory.
+
+## Native Runner Issues
+
+### Runner Not Picking Up Jobs
+
+**Symptoms:**
+
+- Jobs stay queued
+- No runners appear in GitHub
+
+**Debug steps:**
+
+1. Check logs:
+
+   ```bash
+   gale logs -f
+   ```
+
+2. Dump debug info:
+
+   ```bash
+   gale debug
+   ```
+
+3. Verify runner directories exist:
+   ```bash
+   ls -la ~/.gale/native-runners/work/
+   ```
+
+### Native Runner on macOS
+
+Native mode on macOS works but has some platform-specific behavior:
+
+- Uses `--once` flag instead of `--ephemeral` to ensure Post steps complete
+- Runner exits after completing one job (including all Post steps)
+- If issues persist, consider using Docker mode which is more reliable
+
+**Recommendation:** Docker mode is the most reliable option. Only use native mode if you specifically need macOS features (Xcode, iOS builds, etc.).
+
+## Debugging Commands
+
+### View Logs
+
+```bash
+gale logs              # Recent logs
+gale logs -f           # Follow in real-time
+gale logs -n 100       # Last 100 lines
+gale logs --clear      # Clear log file
+```
+
+### Debug Information
+
+```bash
+gale debug             # Outputs JSON with:
+                       # - System info (OS, arch, hostname)
+                       # - Config (mode, labels, max runners)
+                       # - Runner directories and logs
+                       # - Disk usage
+```

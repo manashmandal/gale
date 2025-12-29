@@ -4,10 +4,10 @@ Complete reference for all Gale commands.
 
 ## Global Flags
 
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--config` | `-c` | `~/.gale/config.yaml` | Path to config file |
-| `--log-level` | `-l` | `info` | Log level (debug, info, warn, error) |
+| Flag          | Short | Default               | Description                          |
+| ------------- | ----- | --------------------- | ------------------------------------ |
+| `--config`    | `-c`  | `~/.gale/config.yaml` | Path to config file                  |
+| `--log-level` | `-l`  | `info`                | Log level (debug, info, warn, error) |
 
 ## Commands
 
@@ -41,6 +41,8 @@ gale webhook --port 9000     # Use custom port
 gale webhook --funnel        # Use Tailscale Funnel
 gale webhook --hostname my-gale  # Custom Tailscale hostname
 gale webhook --daemon        # Run in background
+gale webhook --mode native   # Use native runners instead of Docker
+gale webhook --mode docker   # Use Docker runners (default)
 gale webhook -l debug        # Enable debug logging
 ```
 
@@ -86,6 +88,7 @@ gale config path             # Show config file path
 ```
 
 **Examples:**
+
 ```bash
 gale config set scaler.max_runners 20
 gale config set github.scope org
@@ -113,6 +116,7 @@ gale labels remove <label>   # Remove a label
 ```
 
 **Examples:**
+
 ```bash
 gale labels add docker       # Accept jobs with runs-on: docker
 gale labels add gpu-runner   # Accept jobs with runs-on: gpu-runner
@@ -143,6 +147,32 @@ gale app setup              # Show setup instructions
 gale app validate           # Validate app configuration
 gale app create             # Interactive app creation wizard
 ```
+
+### `gale logs`
+
+View gale daemon logs.
+
+```bash
+gale logs              # Show recent logs (last 50 lines)
+gale logs -f           # Follow logs in real-time
+gale logs -n 100       # Show last 100 lines
+gale logs --clear      # Clear log file
+```
+
+### `gale debug`
+
+Dump debug information for troubleshooting.
+
+```bash
+gale debug             # Output JSON with system info, config, runners, directories
+```
+
+Includes:
+
+- System information (OS, architecture, CPU count)
+- Configuration details (runner mode, max runners, labels)
+- Runner directories and logs
+- Disk usage of work directories
 
 ### `gale stop`
 

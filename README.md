@@ -248,6 +248,9 @@ flowchart TB
 # Status and monitoring
 gale status                  # Show status, runners, queued jobs
 gale runners list            # List running containers
+gale logs                    # View recent logs
+gale logs -f                 # Follow logs in real-time
+gale debug                   # Dump debug info for troubleshooting
 
 # Configuration
 gale config show             # Display current config

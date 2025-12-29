@@ -14,16 +14,16 @@ gale start -c /etc/gale/config.yaml
 
 ```yaml
 # ~/.gale/config.yaml
-version: "1"                  # Config version (for migrations)
+version: "1" # Config version (for migrations)
 
 github:
   token: ${GITHUB_TOKEN}
   owner: ${GITHUB_OWNER}
-  repos: []                   # Empty = all repos, or list specific repos
+  repos: [] # Empty = all repos, or list specific repos
   # repos:
   #   - my-project
   #   - another-repo
-  scope: ${GITHUB_SCOPE:-}    # "org", "repo", or "repos" (auto-detected)
+  scope: ${GITHUB_SCOPE:-} # "org", "repo", or "repos" (auto-detected)
 
   # GitHub App configuration (alternative to token)
   app:
@@ -35,43 +35,43 @@ github:
     webhook_secret: ${GALE_WEBHOOK_SECRET}
 
 docker:
-  host: ""                    # Default: unix:///var/run/docker.sock
+  host: "" # Default: unix:///var/run/docker.sock
 
 scaler:
-  min_runners: 0              # Minimum runners to keep alive (warm pool)
-  max_runners: 10             # Maximum concurrent runners
-  poll_interval: 10s          # How often to check for jobs
-  scale_up_delay: 5s          # Throttle between scale-up operations
+  min_runners: 0 # Minimum runners to keep alive (warm pool)
+  max_runners: 10 # Maximum concurrent runners
+  poll_interval: 10s # How often to check for jobs
+  scale_up_delay: 5s # Throttle between scale-up operations
 
 runner:
-  mode: docker                # "docker" or "native" (default: docker)
-  image: myoung34/github-runner:latest  # Docker image (docker mode only)
+  mode: docker # "docker" or "native" (default: docker)
+  image: myoung34/github-runner:latest # Docker image (docker mode only)
   labels:
     - self-hosted
     - linux
     - x64
     - docker
-  env: {}                     # Additional environment variables
-  network_mode: ""            # Docker network mode (docker mode only)
-  timeout: 30m                # Max runner lifetime (0 = no timeout)
+  env: {} # Additional environment variables
+  network_mode: "" # Docker network mode (docker mode only)
+  timeout: 30m # Max runner lifetime (0 = no timeout)
 
 webhook:
-  port: 8080                  # Webhook server port
-  secret: ${WEBHOOK_SECRET}   # GitHub webhook secret
+  port: 8080 # Webhook server port
+  secret: ${WEBHOOK_SECRET} # GitHub webhook secret
 
-log_level: info               # debug, info, warn, error
+log_level: info # debug, info, warn, error
 ```
 
 ## Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `GITHUB_TOKEN` | Personal Access Token with `repo` scope | Yes (unless using App) |
-| `GITHUB_OWNER` | Username or organization name | Yes |
-| `GITHUB_REPO` | Repository name (empty = all repos) | No |
-| `GITHUB_SCOPE` | `org` or `repo` (auto-detected) | No |
-| `GALE_WEBHOOK_SECRET` | Secret for webhook signature verification | No |
-| `GALE_PRIVATE_KEY` | GitHub App private key (alternative to file) | No |
+| Variable              | Description                                  | Required               |
+| --------------------- | -------------------------------------------- | ---------------------- |
+| `GITHUB_TOKEN`        | Personal Access Token with `repo` scope      | Yes (unless using App) |
+| `GITHUB_OWNER`        | Username or organization name                | Yes                    |
+| `GITHUB_REPO`         | Repository name (empty = all repos)          | No                     |
+| `GITHUB_SCOPE`        | `org` or `repo` (auto-detected)              | No                     |
+| `GALE_WEBHOOK_SECRET` | Secret for webhook signature verification    | No                     |
+| `GALE_PRIVATE_KEY`    | GitHub App private key (alternative to file) | No                     |
 
 ## Scope Detection
 
@@ -106,6 +106,7 @@ gale config path
 The `runner.labels` setting determines which jobs Gale will pick up. Jobs with any matching label in their `runs-on` field will be handled by Gale runners.
 
 **Manage labels via CLI:**
+
 ```bash
 gale labels                  # List current labels
 gale labels add docker       # Add a new label
@@ -113,6 +114,7 @@ gale labels remove docker    # Remove a label
 ```
 
 **Example workflow:**
+
 ```yaml
 # This job will be picked up if 'gale-linux' is in your labels
 jobs:
@@ -123,6 +125,7 @@ jobs:
 ```
 
 **Default labels:**
+
 - `gale`
 - `self-hosted`
 - `linux`
@@ -141,6 +144,7 @@ gale pool 0
 ```
 
 Benefits of warm pool:
+
 - Eliminates cold start time for jobs
 - Runners are immediately available
 - Trade-off: consumes resources even when idle
@@ -151,7 +155,7 @@ The `runner.timeout` setting automatically kills runners that have been running 
 
 ```yaml
 runner:
-  timeout: 30m    # Kill runners after 30 minutes
+  timeout: 30m # Kill runners after 30 minutes
 ```
 
 This prevents stuck or zombie runners from consuming resources indefinitely. When a runner exceeds the timeout:
@@ -161,6 +165,7 @@ This prevents stuck or zombie runners from consuming resources indefinitely. Whe
 3. A warning is logged with the runner details
 
 **Recommended values:**
+
 - `30m` - Suitable for most CI/CD jobs
 - `1h` - For longer-running builds or tests
 - `0` - Disable timeout (not recommended)
@@ -171,14 +176,16 @@ This prevents stuck or zombie runners from consuming resources indefinitely. Whe
 jobs:
   build:
     runs-on: gale
-    timeout-minutes: 15    # GitHub cancels job after 15 minutes
+    timeout-minutes: 15 # GitHub cancels job after 15 minutes
 ```
 
 ## Runner Mode
 
 The `runner.mode` setting determines how runners are spawned:
 
-### Docker Mode (default)
+> **💡 Recommendation:** Docker mode is more reliable and battle-tested. Only use native mode if you specifically need macOS features like Xcode or iOS builds.
+
+### Docker Mode (default, recommended)
 
 ```yaml
 runner:
@@ -190,6 +197,7 @@ runner:
 - Works on any system with Docker installed
 - Containers run Linux regardless of host OS
 - Best for CI/CD isolation and reproducibility
+- Most reliable and battle-tested option
 
 ### Native Mode
 
@@ -205,11 +213,14 @@ runner:
 - Runners execute directly on the host OS
 
 **Use native mode when:**
+
 - You need true macOS runners (Xcode, iOS builds)
 - Docker is not available or desired
 - You want runners to use host resources directly
 
 **Caveats:**
+
 - Less isolation than Docker mode
+- Native mode has platform-specific quirks, especially on macOS
 - Runner binaries are cached in `~/.gale/native-runners/`
 - Cleanup of work directories is automatic
