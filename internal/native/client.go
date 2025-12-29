@@ -304,28 +304,127 @@ func (c *Client) waitForCompletion(runner *Runner) {
 func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 	deadline := time.Now().Add(maxWait)
 	checkInterval := 2 * time.Second
+	startTime := time.Now()
 
+	// Always wait at least 5 seconds initially - Runner.Worker may not have
+	// opened files yet when Runner.Listener exits
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Initial wait (5s) for Runner.Worker to start...\n")
+	time.Sleep(5 * time.Second)
+
+	// Log what detection methods find initially
+	c.logProcessDetectionDetails(runner.Dir)
+
+	iteration := 0
 	for time.Now().Before(deadline) {
 		pids := c.getProcessesInDir(runner.Dir)
+		iteration++
+
 		if len(pids) == 0 {
-			return
+			// Double-check after a short delay to avoid race condition
+			time.Sleep(1 * time.Second)
+			pids = c.getProcessesInDir(runner.Dir)
+			if len(pids) == 0 {
+				fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes completed after %v (iterations=%d)\n",
+					time.Since(startTime), iteration)
+				return
+			}
 		}
 
-		fmt.Fprintf(os.Stderr, "[GALE DEBUG] Still waiting for %d processes in %s: %v\n",
-			len(pids), runner.Dir, pids)
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting for %d processes in %s (elapsed=%v)\n",
+			iteration, len(pids), runner.Dir, time.Since(startTime))
+
+		// Every 10 iterations, log detailed detection info
+		if iteration%10 == 0 {
+			c.logProcessDetectionDetails(runner.Dir)
+		}
+
 		time.Sleep(checkInterval)
 	}
 
 	// Timeout - log warning but continue
 	pids := c.getProcessesInDir(runner.Dir)
 	if len(pids) > 0 {
-		fmt.Fprintf(os.Stderr, "[GALE WARN] Timeout waiting for processes in %s, still running: %v\n",
-			runner.Dir, pids)
+		fmt.Fprintf(os.Stderr, "[GALE WARN] Timeout waiting for processes in %s after %v, still running: %v\n",
+			runner.Dir, time.Since(startTime), pids)
 	}
 }
 
-// getProcessesInDir returns PIDs of processes with the directory in their command line
+// logProcessDetectionDetails logs what each detection method finds
+func (c *Client) logProcessDetectionDetails(dir string) {
+	lsofPids := c.getProcessesViaLsof(dir)
+	pgrepPids := c.getProcessesViaPgrep(dir)
+	workerPids := c.getRunnerWorkerProcesses()
+
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Process detection details for %s:\n", dir)
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG]   lsof +D: %v\n", lsofPids)
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG]   pgrep -f dir: %v\n", pgrepPids)
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG]   pgrep Runner.Worker: %v\n", workerPids)
+}
+
+// getProcessesInDir returns PIDs of processes related to the runner directory
+// Uses multiple detection methods for robustness on macOS:
+// 1. lsof - finds processes with open files in directory
+// 2. pgrep - finds processes with directory in command line
+// 3. ps - finds Runner.Worker/Runner.Listener processes
 func (c *Client) getProcessesInDir(dir string) []string {
+	pidSet := make(map[string]bool)
+
+	// Method 1: Use lsof to find processes with open files in the directory
+	// This is the most reliable method on macOS as it catches orphaned processes
+	lsofPids := c.getProcessesViaLsof(dir)
+	for _, pid := range lsofPids {
+		pidSet[pid] = true
+	}
+
+	// Method 2: Use pgrep to find processes with directory in command line
+	pgrepPids := c.getProcessesViaPgrep(dir)
+	for _, pid := range pgrepPids {
+		pidSet[pid] = true
+	}
+
+	// Method 3: Look for Runner.Worker processes specifically
+	// These may be running without the directory in their command line
+	workerPids := c.getRunnerWorkerProcesses()
+	for _, pid := range workerPids {
+		pidSet[pid] = true
+	}
+
+	var pids []string
+	for pid := range pidSet {
+		pids = append(pids, pid)
+	}
+
+	if len(pids) > 0 {
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] getProcessesInDir found %d processes: %v (lsof=%d, pgrep=%d, worker=%d)\n",
+			len(pids), pids, len(lsofPids), len(pgrepPids), len(workerPids))
+	}
+
+	return pids
+}
+
+// getProcessesViaLsof uses lsof to find processes with open files in directory
+func (c *Client) getProcessesViaLsof(dir string) []string {
+	// lsof +D recursively searches directory for open files
+	// Use -t for terse output (just PIDs)
+	cmd := exec.Command("lsof", "-t", "+D", dir)
+	output, err := cmd.Output()
+	if err != nil || len(output) == 0 {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var pids []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
+}
+
+// getProcessesViaPgrep uses pgrep to find processes with directory in command line
+func (c *Client) getProcessesViaPgrep(dir string) []string {
 	cmd := exec.Command("pgrep", "-f", dir)
 	output, err := cmd.Output()
 	if err != nil || len(output) == 0 {
@@ -335,6 +434,27 @@ func (c *Client) getProcessesInDir(dir string) []string {
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	var pids []string
 	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
+}
+
+// getRunnerWorkerProcesses finds GitHub Actions Runner.Worker processes
+func (c *Client) getRunnerWorkerProcesses() []string {
+	// Look for Runner.Worker processes that may not have the directory in their command line
+	cmd := exec.Command("pgrep", "-f", "Runner.Worker")
+	output, err := cmd.Output()
+	if err != nil || len(output) == 0 {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var pids []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
 		if line != "" {
 			pids = append(pids, line)
 		}
