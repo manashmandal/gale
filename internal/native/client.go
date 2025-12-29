@@ -364,12 +364,10 @@ func (c *Client) waitForCompletion(runner *Runner) {
 	c.mu.Unlock()
 }
 
-// waitForAllProcesses waits for the runner's process group to exit.
+// waitForAllProcesses waits for all processes using the runner directory to exit.
+// This includes both the runner's process group AND any job scripts that may run
+// in their own process group.
 func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
-	if runner.PGID <= 0 {
-		return
-	}
-
 	deadline := time.Now().Add(maxWait)
 	checkInterval := 2 * time.Second
 	startTime := time.Now()
@@ -377,26 +375,37 @@ func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 
 	for time.Now().Before(deadline) {
 		iteration++
-		alive, err := processGroupAlive(runner.PGID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[GALE WARN] Error checking process group %d: %v\n", runner.PGID, err)
-			return
+
+		// Check both process group AND processes with open files in directory
+		pgAlive := false
+		if runner.PGID > 0 {
+			pgAlive, _ = processGroupAlive(runner.PGID)
 		}
-		if !alive {
-			fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes completed after %v (iterations=%d)\n",
-				time.Since(startTime), iteration)
-			return
+
+		// Use lsof to find any process with open files in the runner directory
+		// This catches job scripts that run in their own process group
+		lsofPids := getProcessesViaLsof(runner.Dir)
+
+		if !pgAlive && len(lsofPids) == 0 {
+			// Double-check after a short delay to avoid race condition
+			time.Sleep(500 * time.Millisecond)
+			lsofPids = getProcessesViaLsof(runner.Dir)
+			if len(lsofPids) == 0 {
+				fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes completed after %v (iterations=%d)\n",
+					time.Since(startTime), iteration)
+				return
+			}
 		}
 
 		if iteration%10 == 0 {
-			fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting for process group %d (elapsed=%v)\n",
-				iteration, runner.PGID, time.Since(startTime))
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting: pgAlive=%v, lsofPids=%v (elapsed=%v)\n",
+				iteration, pgAlive, lsofPids, time.Since(startTime))
 		}
 		time.Sleep(checkInterval)
 	}
 
-	alive, _ := processGroupAlive(runner.PGID)
-	if alive {
+	lsofPids := getProcessesViaLsof(runner.Dir)
+	if len(lsofPids) > 0 {
 		fmt.Fprintf(os.Stderr, "[GALE WARN] Timeout waiting for process group %d after %v\n",
 			runner.PGID, time.Since(startTime))
 	}
@@ -435,6 +444,28 @@ func processAlive(pid int) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+// getProcessesViaLsof uses lsof to find processes with open files in directory.
+// This catches job scripts that run in their own process group.
+func getProcessesViaLsof(dir string) []string {
+	// lsof +D recursively searches directory for open files
+	// Use -t for terse output (just PIDs)
+	cmd := exec.Command("lsof", "-t", "+D", dir)
+	output, err := cmd.Output()
+	if err != nil || len(output) == 0 {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var pids []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
 }
 
 func (c *Client) ListRunners(ctx context.Context) ([]Runner, error) {
