@@ -393,35 +393,32 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
-	// Give Post steps time to start - GitHub sends "completed" webhook when main steps
-	// finish, but Post steps still need to run. Wait 10 seconds before polling.
-	h.logger.Info("[DEBUG] gracefulShutdown: waiting 10s for Post steps to start")
-	time.Sleep(10 * time.Second)
-
-	// Wait for runner to finish reporting to GitHub (ephemeral runners exit after job)
-	// Check every 2 seconds for up to 60 seconds (increased from 30s)
-	for i := 0; i < 30; i++ {
-		time.Sleep(2 * time.Second)
+	// The native runner client now handles waiting for all processes (including Post steps)
+	// via process group tracking. We just need to poll until the runner marks itself as exited.
+	// Wait up to 6 minutes to allow Post steps plenty of time to complete.
+	// Check every 5 seconds for up to 72 iterations (6 minutes total).
+	for i := 0; i < 72; i++ {
+		time.Sleep(5 * time.Second)
 		if h.runner == nil {
 			return // Handler was closed
 		}
 		exited, err := h.runner.IsRunnerExited(ctx, runnerID)
-		h.logger.Info("[DEBUG] gracefulShutdown poll",
-			"iteration", i,
-			"exited", exited,
-			"error", err,
-		)
+		if i%12 == 0 { // Log every minute
+			h.logger.Info("[DEBUG] gracefulShutdown poll",
+				"iteration", i,
+				"exited", exited,
+				"error", err,
+			)
+		}
 		if err != nil {
 			h.logger.Debug("error checking runner status", "error", err)
 			break
 		}
 		if exited {
-			h.logger.Info("runner exited gracefully - NOT removing (letting cleanup handle it)",
+			h.logger.Info("runner exited gracefully",
 				"job_id", jobID,
 				"runner_id", runnerID,
 			)
-			// Don't remove immediately - Post steps may still be running
-			// Let periodic cleanup handle directory removal
 			return
 		}
 	}
@@ -430,28 +427,14 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
-	// Runner still running after 70s (10s initial + 60s polling), send SIGTERM
-	h.logger.Warn("[DEBUG] runner did not exit in 70s, sending SIGTERM",
+	// Runner still running after 6 minutes - something is wrong, force stop
+	h.logger.Warn("runner did not exit in 6 minutes, forcing stop",
 		"job_id", jobID,
 		"runner_id", runnerID,
 	)
-	if err := h.runner.StopRunner(ctx, runnerID, 10); err != nil {
+	if err := h.runner.StopRunner(ctx, runnerID, 30); err != nil {
 		h.logger.Warn("failed to stop runner", "error", err)
 	}
-
-	// Wait another 10 seconds for graceful stop
-	time.Sleep(10 * time.Second)
-
-	if h.runner == nil {
-		return // Handler was closed
-	}
-
-	// Force remove only after timeout
-	h.logger.Warn("[DEBUG] removing runner after timeout (THIS SHOULD NOT HAPPEN NORMALLY)",
-		"job_id", jobID,
-		"runner_id", runnerID,
-	)
-	_ = h.runner.RemoveRunner(ctx, runnerID)
 }
 
 func (h *Handler) requiresGaleRunner(jobLabels []string) bool {

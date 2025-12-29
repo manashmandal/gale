@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,15 +38,22 @@ var runnerChecksums = map[string]string{
 }
 
 type Runner struct {
-	ID        string
-	PID       int
-	Dir       string
-	Status    string
-	Repo      string
-	StartedAt time.Time
-	ExitedAt  time.Time
-	cmd       *exec.Cmd
-	logFile   *os.File
+	ID              string
+	Name            string
+	PID             int
+	PGID            int
+	Dir             string
+	Status          string
+	Repo            string
+	Scope           string
+	OrgName         string
+	GitHubToken     string
+	GitHubRunnerID  int64
+	GitHubEphemeral bool
+	StartedAt       time.Time
+	ExitedAt        time.Time
+	cmd             *exec.Cmd
+	logFile         *os.File
 }
 
 const cleanupGracePeriod = 2 * time.Minute
@@ -167,14 +175,21 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		return nil, fmt.Errorf("creating work temp dir: %w", err)
 	}
 
+	// On macOS, the upstream runner's built-in `--ephemeral` mode can exit before Post steps complete.
+	// Work around this by registering as non-ephemeral and emulating ephemeral semantics with `run.sh --once`
+	// plus GitHub API de-registration after exit.
+	useGitHubEphemeral := runtime.GOOS != "darwin"
+
 	configArgs := []string{
 		"--unattended",
-		"--ephemeral",
 		"--name", runnerName,
 		"--token", registrationToken,
 		"--labels", strings.Join(cfg.Labels, ","),
 		"--work", "_work",
 		"--replace",
+	}
+	if useGitHubEphemeral {
+		configArgs = append(configArgs, "--ephemeral")
 	}
 
 	if cfg.Scope == "org" && cfg.OrgName != "" {
@@ -196,8 +211,14 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		return nil, fmt.Errorf("configuring runner: %w\nOutput: %s", err, string(output))
 	}
 
+	ghRunnerID, _ := readLocalRunnerID(filepath.Join(runnerDir, ".runner"))
+
 	runScript := filepath.Join(runnerDir, "run.sh")
-	runCmd := exec.Command(runScript)
+	runArgs := []string{}
+	if !useGitHubEphemeral {
+		runArgs = append(runArgs, "--once")
+	}
+	runCmd := exec.Command(runScript, runArgs...)
 	runCmd.Dir = runnerDir
 	runCmd.Env = os.Environ()
 	for k, v := range cfg.Env {
@@ -220,19 +241,42 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		if logFile != nil {
 			logFile.Close()
 		}
+		if !useGitHubEphemeral && cfg.Token != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			id := ghRunnerID
+			if id == 0 {
+				if foundID, findErr := findGitHubRunnerID(ctx, cfg.Token, cfg.RepoURL, cfg.OrgName, cfg.Scope, runnerName); findErr == nil {
+					id = foundID
+				}
+			}
+			if id != 0 {
+				_ = deleteGitHubRunner(ctx, cfg.Token, cfg.RepoURL, cfg.OrgName, cfg.Scope, id)
+			}
+		}
 		os.RemoveAll(runnerDir)
 		return nil, fmt.Errorf("starting runner: %w", err)
 	}
 
+	pgid, _ := syscall.Getpgid(runCmd.Process.Pid)
+
 	runner := &Runner{
-		ID:        runnerID,
-		PID:       runCmd.Process.Pid,
-		Dir:       runnerDir,
-		Status:    "running",
-		Repo:      cfg.RepoURL,
-		StartedAt: time.Now(),
-		cmd:       runCmd,
-		logFile:   logFile,
+		ID:              runnerID,
+		Name:            runnerName,
+		PID:             runCmd.Process.Pid,
+		PGID:            pgid,
+		Dir:             runnerDir,
+		Status:          "running",
+		Repo:            cfg.RepoURL,
+		Scope:           cfg.Scope,
+		OrgName:         cfg.OrgName,
+		GitHubToken:     cfg.Token,
+		GitHubRunnerID:  ghRunnerID,
+		GitHubEphemeral: useGitHubEphemeral,
+		StartedAt:       time.Now(),
+		cmd:             runCmd,
+		logFile:         logFile,
 	}
 
 	// Only lock for map registration - runner creation is fully parallel
@@ -293,6 +337,25 @@ func (c *Client) waitForCompletion(runner *Runner) {
 	fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes in %s completed at %v (waited %v)\n",
 		runner.Dir, actualExitTime, actualExitTime.Sub(listenerExitTime))
 
+	if !runner.GitHubEphemeral && runner.GitHubToken != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		ghID := runner.GitHubRunnerID
+		if ghID == 0 && runner.Name != "" {
+			if foundID, err := findGitHubRunnerID(ctx, runner.GitHubToken, runner.Repo, runner.OrgName, runner.Scope, runner.Name); err == nil {
+				ghID = foundID
+			}
+		}
+		if ghID != 0 {
+			if err := deleteGitHubRunner(ctx, runner.GitHubToken, runner.Repo, runner.OrgName, runner.Scope, ghID); err != nil {
+				fmt.Fprintf(os.Stderr, "[GALE WARN] Failed to de-register runner %s (id=%d): %v\n", runner.Name, ghID, err)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[GALE WARN] Unable to determine GitHub runner ID for %s; skipping de-registration\n", runner.Name)
+		}
+	}
+
 	c.mu.Lock()
 	if r, exists := c.runners[runner.ID]; exists {
 		r.Status = "exited"
@@ -301,166 +364,77 @@ func (c *Client) waitForCompletion(runner *Runner) {
 	c.mu.Unlock()
 }
 
-// waitForAllProcesses waits for all processes running in the runner directory to exit
+// waitForAllProcesses waits for the runner's process group to exit.
 func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
+	if runner.PGID <= 0 {
+		return
+	}
+
 	deadline := time.Now().Add(maxWait)
 	checkInterval := 2 * time.Second
 	startTime := time.Now()
-
-	// Always wait at least 5 seconds initially - Runner.Worker may not have
-	// opened files yet when Runner.Listener exits
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Initial wait (5s) for Runner.Worker to start...\n")
-	time.Sleep(5 * time.Second)
-
-	// Log what detection methods find initially
-	c.logProcessDetectionDetails(runner.Dir)
-
 	iteration := 0
+
 	for time.Now().Before(deadline) {
-		pids := c.getProcessesInDir(runner.Dir)
 		iteration++
-
-		if len(pids) == 0 {
-			// Double-check after a short delay to avoid race condition
-			time.Sleep(1 * time.Second)
-			pids = c.getProcessesInDir(runner.Dir)
-			if len(pids) == 0 {
-				fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes completed after %v (iterations=%d)\n",
-					time.Since(startTime), iteration)
-				return
-			}
+		alive, err := processGroupAlive(runner.PGID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[GALE WARN] Error checking process group %d: %v\n", runner.PGID, err)
+			return
+		}
+		if !alive {
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes completed after %v (iterations=%d)\n",
+				time.Since(startTime), iteration)
+			return
 		}
 
-		fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting for %d processes in %s (elapsed=%v)\n",
-			iteration, len(pids), runner.Dir, time.Since(startTime))
-
-		// Every 10 iterations, log detailed detection info
 		if iteration%10 == 0 {
-			c.logProcessDetectionDetails(runner.Dir)
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting for process group %d (elapsed=%v)\n",
+				iteration, runner.PGID, time.Since(startTime))
 		}
-
 		time.Sleep(checkInterval)
 	}
 
-	// Timeout - log warning but continue
-	pids := c.getProcessesInDir(runner.Dir)
-	if len(pids) > 0 {
-		fmt.Fprintf(os.Stderr, "[GALE WARN] Timeout waiting for processes in %s after %v, still running: %v\n",
-			runner.Dir, time.Since(startTime), pids)
+	alive, _ := processGroupAlive(runner.PGID)
+	if alive {
+		fmt.Fprintf(os.Stderr, "[GALE WARN] Timeout waiting for process group %d after %v\n",
+			runner.PGID, time.Since(startTime))
 	}
 }
 
-// logProcessDetectionDetails logs what each detection method finds
-func (c *Client) logProcessDetectionDetails(dir string) {
-	lsofPids := c.getProcessesViaLsof(dir)
-	pgrepPids := c.getProcessesViaPgrep(dir)
-	workerPids := c.getRunnerWorkerProcesses()
-
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Process detection details for %s:\n", dir)
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG]   lsof +D: %v\n", lsofPids)
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG]   pgrep -f dir: %v\n", pgrepPids)
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG]   pgrep Runner.Worker: %v\n", workerPids)
+func processGroupAlive(pgid int) (bool, error) {
+	if pgid <= 0 {
+		return false, nil
+	}
+	err := syscall.Kill(-pgid, 0)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		return false, nil
+	}
+	if errors.Is(err, syscall.EPERM) {
+		// Process group exists, but we don't have permissions (shouldn't happen for our own runners).
+		return true, nil
+	}
+	return false, err
 }
 
-// getProcessesInDir returns PIDs of processes related to the runner directory
-// Uses multiple detection methods for robustness on macOS:
-// 1. lsof - finds processes with open files in directory
-// 2. pgrep - finds processes with directory in command line
-// 3. ps - finds Runner.Worker/Runner.Listener processes
-func (c *Client) getProcessesInDir(dir string) []string {
-	pidSet := make(map[string]bool)
-
-	// Method 1: Use lsof to find processes with open files in the directory
-	// This is the most reliable method on macOS as it catches orphaned processes
-	lsofPids := c.getProcessesViaLsof(dir)
-	for _, pid := range lsofPids {
-		pidSet[pid] = true
+func processAlive(pid int) (bool, error) {
+	if pid <= 0 {
+		return false, nil
 	}
-
-	// Method 2: Use pgrep to find processes with directory in command line
-	pgrepPids := c.getProcessesViaPgrep(dir)
-	for _, pid := range pgrepPids {
-		pidSet[pid] = true
+	err := syscall.Kill(pid, 0)
+	if err == nil {
+		return true, nil
 	}
-
-	// Method 3: Look for Runner.Worker processes specifically
-	// These may be running without the directory in their command line
-	workerPids := c.getRunnerWorkerProcesses()
-	for _, pid := range workerPids {
-		pidSet[pid] = true
+	if errors.Is(err, syscall.ESRCH) {
+		return false, nil
 	}
-
-	var pids []string
-	for pid := range pidSet {
-		pids = append(pids, pid)
+	if errors.Is(err, syscall.EPERM) {
+		return true, nil
 	}
-
-	if len(pids) > 0 {
-		fmt.Fprintf(os.Stderr, "[GALE DEBUG] getProcessesInDir found %d processes: %v (lsof=%d, pgrep=%d, worker=%d)\n",
-			len(pids), pids, len(lsofPids), len(pgrepPids), len(workerPids))
-	}
-
-	return pids
-}
-
-// getProcessesViaLsof uses lsof to find processes with open files in directory
-func (c *Client) getProcessesViaLsof(dir string) []string {
-	// lsof +D recursively searches directory for open files
-	// Use -t for terse output (just PIDs)
-	cmd := exec.Command("lsof", "-t", "+D", dir)
-	output, err := cmd.Output()
-	if err != nil || len(output) == 0 {
-		return nil
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	var pids []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			pids = append(pids, line)
-		}
-	}
-	return pids
-}
-
-// getProcessesViaPgrep uses pgrep to find processes with directory in command line
-func (c *Client) getProcessesViaPgrep(dir string) []string {
-	cmd := exec.Command("pgrep", "-f", dir)
-	output, err := cmd.Output()
-	if err != nil || len(output) == 0 {
-		return nil
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	var pids []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			pids = append(pids, line)
-		}
-	}
-	return pids
-}
-
-// getRunnerWorkerProcesses finds GitHub Actions Runner.Worker processes
-func (c *Client) getRunnerWorkerProcesses() []string {
-	// Look for Runner.Worker processes that may not have the directory in their command line
-	cmd := exec.Command("pgrep", "-f", "Runner.Worker")
-	output, err := cmd.Output()
-	if err != nil || len(output) == 0 {
-		return nil
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	var pids []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			pids = append(pids, line)
-		}
-	}
-	return pids
+	return false, err
 }
 
 func (c *Client) ListRunners(ctx context.Context) ([]Runner, error) {
@@ -499,8 +473,13 @@ func (c *Client) RemoveRunner(ctx context.Context, runnerID string) error {
 		return nil
 	}
 
-	if runner.cmd != nil && runner.cmd.Process != nil {
+	if runner.PGID > 0 && runner.PGID != syscall.Getpgrp() {
+		// Best-effort kill of the entire process group (Runner.Listener + any children).
+		_ = syscall.Kill(-runner.PGID, syscall.SIGKILL)
+		time.Sleep(500 * time.Millisecond)
+	} else if runner.cmd != nil && runner.cmd.Process != nil {
 		_ = runner.cmd.Process.Kill()
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	if runner.logFile != nil {
@@ -508,15 +487,6 @@ func (c *Client) RemoveRunner(ctx context.Context, runnerID string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "[GALE DEBUG] RemoveRunner called for %s, dir=%s\n", runnerID, runner.Dir)
-
-	// Kill any remaining processes in the runner directory before removing
-	pids := c.getProcessesInDir(runner.Dir)
-	if len(pids) > 0 {
-		fmt.Fprintf(os.Stderr, "[GALE DEBUG] Killing remaining processes before removal: %v\n", pids)
-		killCmd := exec.Command("pkill", "-9", "-f", runner.Dir)
-		_ = killCmd.Run()
-		time.Sleep(500 * time.Millisecond)
-	}
 
 	return os.RemoveAll(runner.Dir)
 }
@@ -559,20 +529,39 @@ func (c *Client) StopRunner(ctx context.Context, runnerID string, timeout int) e
 		return nil
 	}
 
-	_ = runner.cmd.Process.Signal(syscall.SIGTERM)
-
-	done := make(chan struct{})
-	go func() {
-		runner.cmd.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-time.After(time.Duration(timeout) * time.Second):
-		return runner.cmd.Process.Kill()
+	// Prefer signaling the runner's process group so children (Runner.Worker, etc.) are stopped too.
+	if runner.PGID > 0 && runner.PGID != syscall.Getpgrp() {
+		_ = syscall.Kill(-runner.PGID, syscall.SIGTERM)
+	} else {
+		_ = runner.cmd.Process.Signal(syscall.SIGTERM)
 	}
+
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	for time.Now().Before(deadline) {
+		if runner.PGID > 0 {
+			alive, err := processGroupAlive(runner.PGID)
+			if err == nil && !alive {
+				return nil
+			}
+		} else {
+			alive, err := processAlive(runner.PID)
+			if err == nil && !alive {
+				return nil
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if runner.PGID > 0 && runner.PGID != syscall.Getpgrp() {
+		if err := syscall.Kill(-runner.PGID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return err
+		}
+		return nil
+	}
+	if err := runner.cmd.Process.Kill(); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
 }
 
 func (c *Client) IsRunnerExited(ctx context.Context, runnerID string) (bool, error) {
@@ -796,4 +785,120 @@ func getRegistrationToken(ctx context.Context, token, repoURL, orgName, scope st
 	}
 
 	return tokenResp.Token, nil
+}
+
+type localRunnerFile struct {
+	AgentID   int64  `json:"agentId"`
+	AgentName string `json:"agentName"`
+}
+
+func readLocalRunnerID(path string) (int64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	var f localRunnerFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return 0, err
+	}
+	if f.AgentID == 0 {
+		return 0, fmt.Errorf("missing agentId in %s", path)
+	}
+	return f.AgentID, nil
+}
+
+type listRunnersResponse struct {
+	Runners []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	} `json:"runners"`
+}
+
+func parseRepoOwnerRepo(repoURL string) (string, string, error) {
+	repoURL = strings.TrimSuffix(repoURL, "/")
+	repoURL = strings.TrimSuffix(repoURL, ".git")
+	parts := strings.Split(repoURL, "/")
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("invalid repo URL: %s", repoURL)
+	}
+	owner := parts[len(parts)-2]
+	repo := parts[len(parts)-1]
+	return owner, repo, nil
+}
+
+func findGitHubRunnerID(ctx context.Context, token, repoURL, orgName, scope, runnerName string) (int64, error) {
+	var apiURL string
+	if scope == "org" && orgName != "" {
+		apiURL = fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners?per_page=100", orgName)
+	} else {
+		owner, repo, err := parseRepoOwnerRepo(repoURL)
+		if err != nil {
+			return 0, err
+		}
+		apiURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runners?per_page=100", owner, repo)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("listing runners failed: %s (status %d)", string(body), resp.StatusCode)
+	}
+
+	var listResp listRunnersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return 0, fmt.Errorf("decoding response: %w", err)
+	}
+
+	for _, r := range listResp.Runners {
+		if r.Name == runnerName {
+			return r.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("runner %q not found", runnerName)
+}
+
+func deleteGitHubRunner(ctx context.Context, token, repoURL, orgName, scope string, runnerID int64) error {
+	var apiURL string
+	if scope == "org" && orgName != "" {
+		apiURL = fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners/%d", orgName, runnerID)
+	} else {
+		owner, repo, err := parseRepoOwnerRepo(repoURL)
+		if err != nil {
+			return err
+		}
+		apiURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runners/%d", owner, repo, runnerID)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "DELETE", apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("failed to delete runner: %s (status %d)", string(body), resp.StatusCode)
 }
