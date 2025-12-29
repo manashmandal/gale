@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint fmt vet check run help
+.PHONY: build install clean test lint fmt vet check run help debug-logs debug-runner-logs debug-runner-status debug-processes debug-cleanup debug-all
 
 # Build variables
 BINARY_NAME := gale
@@ -104,6 +104,46 @@ run-start: build
 docker-build:
 	@echo "Building Docker image..."
 	docker build -t gale:$(VERSION) .
+
+## debug-logs: Show gale webhook server logs
+debug-logs:
+	@echo "=== Gale Logs (last 50 lines) ==="
+	@gale logs 2>&1 | tail -50 || echo "No logs found or gale not running"
+
+## debug-runner-logs: Show native runner logs
+debug-runner-logs:
+	@echo "=== Native Runner Logs ==="
+	@for log in ~/.gale/native-runners/work/*/runner.log; do \
+		if [ -f "$$log" ]; then \
+			echo "--- $$log ---"; \
+			tail -50 "$$log"; \
+			echo ""; \
+		fi \
+	done 2>/dev/null || echo "No runner logs found"
+
+## debug-runner-status: Show runner exit status and signals
+debug-runner-status:
+	@echo "=== Runner Status Debug ==="
+	@gale logs 2>&1 | grep -E "(DEBUG|exited|signal|graceful|WARN|ERROR)" | tail -30 || echo "No debug info found"
+
+## debug-processes: Show gale-related processes
+debug-processes:
+	@echo "=== Gale Processes ==="
+	@ps aux | grep -E "(gale|Runner\.(Listener|Worker))" | grep -v grep || echo "No processes found"
+	@echo ""
+	@echo "=== Runner Work Directories ==="
+	@ls -la ~/.gale/native-runners/work/ 2>/dev/null || echo "No work directories"
+
+## debug-cleanup: List exited runners pending cleanup
+debug-cleanup:
+	@echo "=== Runner Directories ==="
+	@ls -la ~/.gale/native-runners/work/ 2>/dev/null || echo "No runners"
+	@echo ""
+	@echo "=== Runner PIDs (from pgrep) ==="
+	@pgrep -fl "Runner\." 2>/dev/null || echo "No Runner processes"
+
+## debug-all: Run all debug commands
+debug-all: debug-logs debug-runner-status debug-runner-logs debug-processes
 
 ## help: Show this help message
 help:
