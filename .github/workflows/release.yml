@@ -87,13 +87,32 @@ jobs:
           fi
           VERSION="${TAG#v}"
 
+          # Wait for release assets to be available (retry up to 30 seconds)
+          echo "Waiting for release assets..."
+          for i in {1..6}; do
+            ASSET_ID=$(curl -sL "https://api.github.com/repos/manashmandal/gale/releases/tags/${TAG}" \
+              -H "Authorization: token $GITHUB_TOKEN" | \
+              jq -r '.assets[] | select(.name == "checksums.txt") | .id // empty')
+            if [ -n "$ASSET_ID" ]; then
+              echo "Found checksums.txt asset (ID: $ASSET_ID)"
+              break
+            fi
+            echo "Attempt $i: assets not ready, waiting 5s..."
+            sleep 5
+          done
+
+          if [ -z "$ASSET_ID" ]; then
+            echo "Error: checksums.txt asset not found after 30 seconds"
+            exit 1
+          fi
+
           # Download checksums
-          curl -sL "https://api.github.com/repos/manashmandal/gale/releases/tags/${TAG}" \
-            -H "Authorization: token $GITHUB_TOKEN" | \
-            jq -r '.assets[] | select(.name == "checksums.txt") | .id' | \
-            xargs -I {} curl -sL "https://api.github.com/repos/manashmandal/gale/releases/assets/{}" \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/octet-stream" > checksums.txt
+          curl -sL "https://api.github.com/repos/manashmandal/gale/releases/assets/${ASSET_ID}" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/octet-stream" > checksums.txt
+
+          echo "Downloaded checksums.txt:"
+          cat checksums.txt
 
           # Extract SHA256 values
           SHA_DARWIN_AMD64=$(grep "darwin_amd64" checksums.txt | awk '{print $1}')
@@ -101,35 +120,35 @@ jobs:
           SHA_LINUX_AMD64=$(grep "linux_amd64" checksums.txt | awk '{print $1}')
           SHA_LINUX_ARM64=$(grep "linux_arm64" checksums.txt | awk '{print $1}')
 
-          # Generate Formula
-          cat > /tmp/gale.rb << EOF
+          # Generate Formula (no leading spaces in heredoc)
+          cat > /tmp/gale.rb << 'FORMULA'
           require_relative "../lib/private_strategy"
 
           class Gale < Formula
             desc "Self-hosted GitHub Actions runner manager with auto-scaling"
             homepage "https://github.com/manashmandal/gale"
-            version "${VERSION}"
+            version "VERSION_PLACEHOLDER"
             license "MIT"
 
             on_macos do
               on_intel do
-                url "https://github.com/manashmandal/gale/releases/download/${TAG}/gale_${VERSION}_darwin_amd64.tar.gz", using: GitHubPrivateRepositoryDownloadStrategy
-                sha256 "${SHA_DARWIN_AMD64}"
+                url "URL_DARWIN_AMD64", using: GitHubPrivateRepositoryDownloadStrategy
+                sha256 "SHA_DARWIN_AMD64"
               end
               on_arm do
-                url "https://github.com/manashmandal/gale/releases/download/${TAG}/gale_${VERSION}_darwin_arm64.tar.gz", using: GitHubPrivateRepositoryDownloadStrategy
-                sha256 "${SHA_DARWIN_ARM64}"
+                url "URL_DARWIN_ARM64", using: GitHubPrivateRepositoryDownloadStrategy
+                sha256 "SHA_DARWIN_ARM64"
               end
             end
 
             on_linux do
               on_intel do
-                url "https://github.com/manashmandal/gale/releases/download/${TAG}/gale_${VERSION}_linux_amd64.tar.gz", using: GitHubPrivateRepositoryDownloadStrategy
-                sha256 "${SHA_LINUX_AMD64}"
+                url "URL_LINUX_AMD64", using: GitHubPrivateRepositoryDownloadStrategy
+                sha256 "SHA_LINUX_AMD64"
               end
               on_arm do
-                url "https://github.com/manashmandal/gale/releases/download/${TAG}/gale_${VERSION}_linux_arm64.tar.gz", using: GitHubPrivateRepositoryDownloadStrategy
-                sha256 "${SHA_LINUX_ARM64}"
+                url "URL_LINUX_ARM64", using: GitHubPrivateRepositoryDownloadStrategy
+                sha256 "SHA_LINUX_ARM64"
               end
             end
 
@@ -151,16 +170,32 @@ jobs:
               system "#{bin}/gale", "version"
             end
           end
-          EOF
+          FORMULA
 
-          # Remove leading spaces from heredoc
-          sed -i 's/^          //' /tmp/gale.rb
+          # Remove leading spaces and substitute placeholders (macOS compatible sed)
+          sed 's/^          //' /tmp/gale.rb > /tmp/gale_clean.rb
+          sed -e "s|VERSION_PLACEHOLDER|${VERSION}|g" \
+              -e "s|URL_DARWIN_AMD64|https://github.com/manashmandal/gale/releases/download/${TAG}/gale_${VERSION}_darwin_amd64.tar.gz|g" \
+              -e "s|SHA_DARWIN_AMD64|${SHA_DARWIN_AMD64}|g" \
+              -e "s|URL_DARWIN_ARM64|https://github.com/manashmandal/gale/releases/download/${TAG}/gale_${VERSION}_darwin_arm64.tar.gz|g" \
+              -e "s|SHA_DARWIN_ARM64|${SHA_DARWIN_ARM64}|g" \
+              -e "s|URL_LINUX_AMD64|https://github.com/manashmandal/gale/releases/download/${TAG}/gale_${VERSION}_linux_amd64.tar.gz|g" \
+              -e "s|SHA_LINUX_AMD64|${SHA_LINUX_AMD64}|g" \
+              -e "s|URL_LINUX_ARM64|https://github.com/manashmandal/gale/releases/download/${TAG}/gale_${VERSION}_linux_arm64.tar.gz|g" \
+              -e "s|SHA_LINUX_ARM64|${SHA_LINUX_ARM64}|g" \
+              /tmp/gale_clean.rb > /tmp/gale_final.rb
+
+          echo "Generated formula:"
+          cat /tmp/gale_final.rb
 
           # Get current SHA and update Formula
           CURRENT_SHA=$(curl -sL "https://api.github.com/repos/manashmandal/homebrew-tap/contents/Formula/gale.rb" \
             -H "Authorization: token $GITHUB_TOKEN" | jq -r '.sha')
 
+          # base64 encode (macOS compatible - no -w0 option)
+          CONTENT=$(base64 < /tmp/gale_final.rb | tr -d '\n')
+
           curl -sL -X PUT "https://api.github.com/repos/manashmandal/homebrew-tap/contents/Formula/gale.rb" \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"message\": \"feat: update gale to ${TAG}\", \"content\": \"$(base64 -w0 /tmp/gale.rb)\", \"sha\": \"${CURRENT_SHA}\"}"
+            -d "{\"message\": \"feat: update gale to ${TAG}\", \"content\": \"${CONTENT}\", \"sha\": \"${CURRENT_SHA}\"}"
