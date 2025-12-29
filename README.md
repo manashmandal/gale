@@ -52,7 +52,7 @@ Then use `runs-on: gale` in your workflows. Done.
 
 ## Why Gale?
 
-> *"I have a perfectly good machine sitting idle. Why am I waiting 15 minutes for a GitHub-hosted runner to npm install?"*
+> _"I have a perfectly good machine sitting idle. Why am I waiting 15 minutes for a GitHub-hosted runner to npm install?"_
 
 Sound familiar? You want self-hosted runners, but:
 
@@ -85,19 +85,20 @@ Gale is intentionally simple. It's not the right tool if:
 
 - **You need Windows runners.** Gale supports Linux and macOS (via native mode), but not Windows yet.
 
-- **macOS with Docker mode.** Docker on macOS runs containers inside a Linux VM, so Docker mode cannot run macOS-native code. Use `runner.mode: native` for true macOS runners (Xcode, iOS builds, etc.).
+- **macOS with Docker mode.** Docker on macOS runs containers inside a Linux VM, so Docker mode cannot run macOS-native code. Use `runner.mode: native` for true macOS runners (Xcode, iOS builds, etc.). Note: Native mode on macOS is less battle-tested than Docker mode — it works, but may have edge cases.
 
 - **You need enterprise-grade HA.** Gale is a single binary with no clustering support. If the host goes down, your runners go with it.
 
 ### Important Notes
 
-| Topic | Note |
-|-------|------|
-| **Token Permissions** | GitHub App needs `Administration: Read & Write` permission to register runners. PATs need `repo` and `admin:org` scopes. |
-| **Docker Socket** | Runners get Docker socket access for DinD workflows. This is a security tradeoff — only run on trusted/dedicated hosts. |
-| **Ephemeral Only** | Runners are ephemeral (one job, then exit). No persistent runner state between jobs. |
-| **Single Host** | One Gale instance = one Docker host. No built-in distribution across machines. |
-| **Private Repos** | Designed for private repos where runner minutes are limited. Public repos don't need this. |
+| Topic                 | Note                                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Token Permissions** | GitHub App needs `Administration: Read & Write` permission to register runners. PATs need `repo` and `admin:org` scopes.                                                        |
+| **Docker Socket**     | Runners get Docker socket access for DinD workflows. This is a security tradeoff — only run on trusted/dedicated hosts.                                                         |
+| **Ephemeral Only**    | Runners are ephemeral (one job, then exit). No persistent runner state between jobs.                                                                                            |
+| **Single Host**       | One Gale instance = one Docker host. No built-in distribution across machines.                                                                                                  |
+| **Private Repos**     | Designed for private repos where runner minutes are limited. Public repos don't need this.                                                                                      |
+| **Docker vs Native**  | Docker mode (`runner.mode: docker`) is more reliable and battle-tested. Native mode works but has platform-specific quirks, especially on macOS. Use Docker mode when possible. |
 
 ---
 
@@ -154,14 +155,18 @@ go build -o bin/gale ./cmd/gale
 ### 2. Start Gale
 
 **Option A: Polling Mode**
+
 ```bash
 ./bin/gale start
 ```
 
 **Option B: Webhook Mode (Recommended)**
+
 ```bash
 ./bin/gale webhook --funnel
 ```
+
+> **💡 Runner Mode:** By default, Gale uses Docker mode (`runner.mode: docker`) which is the most reliable option. Only use native mode (`runner.mode: native`) if you need macOS-specific features like Xcode or iOS builds.
 
 ### 3. Use in Your Workflow
 
@@ -172,7 +177,7 @@ on: [push]
 
 jobs:
   build:
-    runs-on: gale  # or [self-hosted, gale]
+    runs-on: gale # or [self-hosted, gale]
     steps:
       - uses: actions/checkout@v4
       - run: echo "Hello from Gale!"
@@ -220,16 +225,16 @@ flowchart TB
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Configuration](docs/configuration.md) | Config file reference and environment variables |
-| [CLI Reference](docs/cli-reference.md) | Complete command reference |
-| [Webhook Mode](docs/webhook-mode.md) | Setting up event-driven scaling |
-| [Tailscale Funnel](docs/tailscale-funnel.md) | Zero-config public HTTPS endpoint |
-| [GitHub App](docs/github-app.md) | Using GitHub App authentication |
-| [Deployment](docs/deployment.md) | Systemd, Docker, and Kamal deployment |
-| [Homebrew](docs/homebrew.md) | Installing via Homebrew (private repo setup) |
-| [Examples](docs/examples.md) | Usage patterns and workflow examples |
+| Document                                     | Description                                     |
+| -------------------------------------------- | ----------------------------------------------- |
+| [Configuration](docs/configuration.md)       | Config file reference and environment variables |
+| [CLI Reference](docs/cli-reference.md)       | Complete command reference                      |
+| [Webhook Mode](docs/webhook-mode.md)         | Setting up event-driven scaling                 |
+| [Tailscale Funnel](docs/tailscale-funnel.md) | Zero-config public HTTPS endpoint               |
+| [GitHub App](docs/github-app.md)             | Using GitHub App authentication                 |
+| [Deployment](docs/deployment.md)             | Systemd, Docker, and Kamal deployment           |
+| [Homebrew](docs/homebrew.md)                 | Installing via Homebrew (private repo setup)    |
+| [Examples](docs/examples.md)                 | Usage patterns and workflow examples            |
 
 ---
 
@@ -264,10 +269,12 @@ See [CLI Reference](docs/cli-reference.md) for all commands.
 Gale mounts the Docker socket (`/var/run/docker.sock`) into runner containers to support Docker-in-Docker workflows. **This grants containers effective root access to the host system.**
 
 **Risks:**
+
 - Code running in workflows can escape the container
 - Malicious workflows could access host filesystem or spawn privileged containers
 
 **Mitigations:**
+
 - Only run Gale on dedicated runner hosts, not on production machines
 - Use private repositories or trusted contributors only
 - Consider using a Docker socket proxy (e.g., [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)) to restrict API access
@@ -283,6 +290,7 @@ webhook:
 ```
 
 Or use the `--require-signature` flag:
+
 ```bash
 gale webhook --require-signature
 ```
@@ -311,8 +319,8 @@ The `actions/setup-go` action's built-in caching can hang indefinitely on self-h
 - name: Setup Go
   uses: actions/setup-go@v5
   with:
-    go-version: '1.23'
-    cache: false  # Disable cache to prevent hangs
+    go-version: "1.23"
+    cache: false # Disable cache to prevent hangs
 ```
 
 ### Missing CLI Tools
@@ -346,7 +354,7 @@ If your `go.mod` specifies a Go version newer than what's installed, Go will att
 ```yaml
 - uses: actions/setup-go@v5
   with:
-    go-version: '1.23'  # Should match go.mod
+    go-version: "1.23" # Should match go.mod
 ```
 
 ---

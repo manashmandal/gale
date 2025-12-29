@@ -163,6 +163,104 @@ func (h *Handler) cleanupExitedContainers() {
 	if cleaned > 0 {
 		h.logger.Warn("[DEBUG] cleaned up exited runners", "count", cleaned)
 	}
+
+	// Also cleanup phantom GitHub runners (offline but marked busy)
+	h.cleanupPhantomGitHubRunners()
+}
+
+func (h *Handler) cleanupPhantomGitHubRunners() {
+	token := h.cfg.GitHub.Token
+	if token == "" {
+		return
+	}
+
+	owner := h.cfg.GitHub.Owner
+	if owner == "" {
+		return
+	}
+
+	// Get repos from config
+	repos := h.cfg.GetRepos()
+	if len(repos) == 0 {
+		return
+	}
+
+	for _, repo := range repos {
+		// Construct full repo name (owner/repo)
+		fullRepoName := fmt.Sprintf("%s/%s", owner, repo)
+		h.cleanupPhantomRunnersForRepo(token, fullRepoName)
+	}
+}
+
+func (h *Handler) cleanupPhantomRunnersForRepo(token, repoFullName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// List runners from GitHub
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/actions/runners?per_page=100", repoFullName)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var result struct {
+		Runners []struct {
+			ID     int64  `json:"id"`
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Busy   bool   `json:"busy"`
+		} `json:"runners"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return
+	}
+
+	// Find and delete phantom runners (offline + busy + gale-managed)
+	for _, r := range result.Runners {
+		if r.Status == "offline" && r.Busy && strings.HasPrefix(r.Name, "gale-native-") {
+			h.logger.Info("cleaning up phantom GitHub runner",
+				"runner_name", r.Name,
+				"runner_id", r.ID,
+				"repo", repoFullName,
+			)
+
+			// Try to delete - will fail if still actually busy, which is fine
+			deleteURL := fmt.Sprintf("https://api.github.com/repos/%s/actions/runners/%d", repoFullName, r.ID)
+			delReq, err := http.NewRequestWithContext(ctx, "DELETE", deleteURL, nil)
+			if err != nil {
+				continue
+			}
+			delReq.Header.Set("Accept", "application/vnd.github+json")
+			delReq.Header.Set("Authorization", "Bearer "+token)
+			delReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+			delResp, err := http.DefaultClient.Do(delReq)
+			if err != nil {
+				continue
+			}
+			delResp.Body.Close()
+
+			if delResp.StatusCode == http.StatusNoContent {
+				h.logger.Info("successfully removed phantom runner",
+					"runner_name", r.Name,
+					"runner_id", r.ID,
+				)
+			}
+		}
+	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -356,21 +454,41 @@ func (h *Handler) monitorRunnerStartup(runnerID string, jobID int64, jobName str
 }
 
 func (h *Handler) handleCompleted(ctx context.Context, event *WorkflowJobEvent) {
+	// The webhook payload includes the actual runner that ran the job
+	// Use that instead of our spawn-time mapping (which may be wrong due to GitHub's job assignment)
+	actualRunnerName := event.WorkflowJob.RunnerName
+	actualRunnerID := ""
+
+	// Our runners are named "gale-native-<uuid>" - extract the UUID
+	if strings.HasPrefix(actualRunnerName, "gale-native-") {
+		actualRunnerID = strings.TrimPrefix(actualRunnerName, "gale-native-")
+	}
+
+	// Clean up our mapping (for bookkeeping, even if the mapping was wrong)
 	h.mu.Lock()
-	runnerID, exists := h.activeRunners[event.WorkflowJob.ID]
+	mappedRunnerID, exists := h.activeRunners[event.WorkflowJob.ID]
 	if exists {
 		delete(h.activeRunners, event.WorkflowJob.ID)
 	}
 	h.mu.Unlock()
 
+	// Use the actual runner ID from webhook if available, otherwise fall back to mapped
+	runnerID := actualRunnerID
+	if runnerID == "" {
+		runnerID = mappedRunnerID
+	}
+
 	h.logger.Info("[DEBUG] handleCompleted called",
 		"job_id", event.WorkflowJob.ID,
-		"runner_id", runnerID,
+		"actual_runner_name", actualRunnerName,
+		"actual_runner_id", actualRunnerID,
+		"mapped_runner_id", mappedRunnerID,
+		"using_runner_id", runnerID,
 		"exists", exists,
 		"status", event.WorkflowJob.Status,
 	)
 
-	if exists {
+	if runnerID != "" {
 		h.logger.Info("job completed, initiating graceful shutdown",
 			"job_id", event.WorkflowJob.ID,
 			"runner_id", runnerID,
@@ -393,29 +511,40 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
-	// The native runner client now handles waiting for all processes (including Post steps)
-	// via process group tracking. We just need to poll until the runner marks itself as exited.
-	// Wait up to 6 minutes to allow Post steps plenty of time to complete.
-	// Check every 5 seconds for up to 72 iterations (6 minutes total).
-	for i := 0; i < 72; i++ {
+	// First check if runner already exited (e.g., ephemeral mode on Linux, or --once mode)
+	exited, err := h.runner.IsRunnerExited(ctx, runnerID)
+	if err == nil && exited {
+		h.logger.Info("runner already exited",
+			"job_id", jobID,
+			"runner_id", runnerID,
+		)
+		return
+	}
+
+	// With --once flag on macOS, the runner should exit on its own after completing all steps.
+	// This timeout is a safety net in case something goes wrong.
+	// 2 minutes should be sufficient for Post steps to complete.
+	postStepWait := 120 * time.Second
+	h.logger.Info("[DEBUG] waiting for runner to exit (with --once flag, should exit after Post steps)",
+		"job_id", jobID,
+		"runner_id", runnerID,
+		"timeout", postStepWait,
+	)
+
+	// Poll while waiting - runner might exit on its own (ephemeral/--once mode)
+	deadline := time.Now().Add(postStepWait)
+	for time.Now().Before(deadline) {
 		time.Sleep(5 * time.Second)
 		if h.runner == nil {
 			return // Handler was closed
 		}
 		exited, err := h.runner.IsRunnerExited(ctx, runnerID)
-		if i%12 == 0 { // Log every minute
-			h.logger.Info("[DEBUG] gracefulShutdown poll",
-				"iteration", i,
-				"exited", exited,
-				"error", err,
-			)
-		}
 		if err != nil {
 			h.logger.Debug("error checking runner status", "error", err)
 			break
 		}
 		if exited {
-			h.logger.Info("runner exited gracefully",
+			h.logger.Info("runner exited gracefully during Post step wait",
 				"job_id", jobID,
 				"runner_id", runnerID,
 			)
@@ -427,8 +556,8 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
-	// Runner still running after 6 minutes - something is wrong, force stop
-	h.logger.Warn("runner did not exit in 6 minutes, forcing stop",
+	// Post step wait complete - now stop the runner gracefully
+	h.logger.Info("stopping runner after Post step wait",
 		"job_id", jobID,
 		"runner_id", runnerID,
 	)

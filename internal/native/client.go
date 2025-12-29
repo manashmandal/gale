@@ -175,9 +175,10 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		return nil, fmt.Errorf("creating work temp dir: %w", err)
 	}
 
-	// On macOS, the upstream runner's built-in `--ephemeral` mode can exit before Post steps complete.
-	// Work around this by registering as non-ephemeral and emulating ephemeral semantics with `run.sh --once`
-	// plus GitHub API de-registration after exit.
+	// On macOS, the upstream runner's built-in `--ephemeral` mode exits before Post steps complete.
+	// Workaround: Register as non-ephemeral and DON'T use --once flag.
+	// The runner will keep waiting for more jobs, but we'll send SIGTERM from gracefulShutdown
+	// after the job is done. This gives Post steps time to complete.
 	useGitHubEphemeral := runtime.GOOS != "darwin"
 
 	configArgs := []string{
@@ -214,8 +215,12 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 	ghRunnerID, _ := readLocalRunnerID(filepath.Join(runnerDir, ".runner"))
 
 	runScript := filepath.Join(runnerDir, "run.sh")
+	// On macOS, we must use --once flag (NOT --ephemeral).
+	// - --ephemeral: Causes Runner.Listener to exit BEFORE Runner.Worker completes Post steps (GitHub runner bug)
+	// - --once: Makes runner exit after ONE complete job (including Post steps), then exit cleanly
+	// On Linux with --ephemeral, the runner handles this properly.
 	runArgs := []string{}
-	if !useGitHubEphemeral {
+	if runtime.GOOS == "darwin" {
 		runArgs = append(runArgs, "--once")
 	}
 	runCmd := exec.Command(runScript, runArgs...)
@@ -338,17 +343,18 @@ func (c *Client) waitForCompletion(runner *Runner) {
 		runner.Dir, actualExitTime, actualExitTime.Sub(listenerExitTime))
 
 	if !runner.GitHubEphemeral && runner.GitHubToken != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		ghID := runner.GitHubRunnerID
 		if ghID == 0 && runner.Name != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			if foundID, err := findGitHubRunnerID(ctx, runner.GitHubToken, runner.Repo, runner.OrgName, runner.Scope, runner.Name); err == nil {
 				ghID = foundID
 			}
+			cancel()
 		}
 		if ghID != 0 {
-			if err := deleteGitHubRunner(ctx, runner.GitHubToken, runner.Repo, runner.OrgName, runner.Scope, ghID); err != nil {
+			// Retry deletion with backoff - GitHub may still think runner is busy
+			// even after job completed webhook is received
+			if err := deleteGitHubRunnerWithRetry(runner.GitHubToken, runner.Repo, runner.OrgName, runner.Scope, ghID, runner.Name); err != nil {
 				fmt.Fprintf(os.Stderr, "[GALE WARN] Failed to de-register runner %s (id=%d): %v\n", runner.Name, ghID, err)
 			}
 		} else {
@@ -365,43 +371,29 @@ func (c *Client) waitForCompletion(runner *Runner) {
 }
 
 // waitForAllProcesses waits for all processes using the runner directory to exit.
-// This includes both the runner's process group AND any job scripts that may run
-// in their own process group.
+// With --once flag, the runner exits cleanly after completing all steps (including Post steps).
+// This is a safety check to ensure any orphaned child processes are also complete.
 func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 	deadline := time.Now().Add(maxWait)
 	checkInterval := 2 * time.Second
 	startTime := time.Now()
 	iteration := 0
 
-	// CRITICAL: Wait for Post steps to initialize after Runner.Listener exits
-	// Post steps may take several seconds to start
-	initialWait := 10 * time.Second
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Waiting %v for Post steps to initialize...\n", initialWait)
-	time.Sleep(initialWait)
-
 	for time.Now().Before(deadline) {
 		iteration++
 
-		// Check process group
 		pgAlive := false
 		if runner.PGID > 0 {
 			pgAlive, _ = processGroupAlive(runner.PGID)
 		}
 
-		// Use multiple methods to find processes using the runner directory:
-		// 1. lsof -d cwd: Processes with runner dir as current working directory (most reliable)
-		// 2. lsof +D: Processes with open file handles in directory
-		// 3. Check for recent temp scripts (indicates active steps)
 		cwdPids := getProcessesByCwd(runner.Dir)
 		lsofPids := getProcessesViaLsof(runner.Dir)
 		hasRecentScripts := hasRecentTempScripts(runner.Dir)
 
 		allDone := !pgAlive && len(cwdPids) == 0 && len(lsofPids) == 0 && !hasRecentScripts
 		if allDone {
-			// Wait longer to ensure we're not in a gap between steps
-			time.Sleep(5 * time.Second)
-
-			// Triple-check after delay
+			time.Sleep(2 * time.Second)
 			cwdPids = getProcessesByCwd(runner.Dir)
 			lsofPids = getProcessesViaLsof(runner.Dir)
 			hasRecentScripts = hasRecentTempScripts(runner.Dir)
@@ -1003,9 +995,42 @@ func deleteGitHubRunner(ctx context.Context, token, repoURL, orgName, scope stri
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNoContent {
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
 		return nil
 	}
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("failed to delete runner: %s (status %d)", string(body), resp.StatusCode)
+}
+
+func deleteGitHubRunnerWithRetry(token, repoURL, orgName, scope string, runnerID int64, runnerName string) error {
+	maxAttempts := 6
+	baseDelay := 5 * time.Second
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := deleteGitHubRunner(ctx, token, repoURL, orgName, scope, runnerID)
+		cancel()
+
+		if err == nil {
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] Successfully de-registered runner %s (id=%d) on attempt %d\n",
+				runnerName, runnerID, attempt)
+			return nil
+		}
+
+		// Check if it's a "runner is busy" error (HTTP 422)
+		if strings.Contains(err.Error(), "currently running a job") || strings.Contains(err.Error(), "status 422") {
+			if attempt < maxAttempts {
+				delay := baseDelay * time.Duration(attempt)
+				fmt.Fprintf(os.Stderr, "[GALE DEBUG] Runner %s still busy on GitHub (attempt %d/%d), retrying in %v...\n",
+					runnerName, attempt, maxAttempts, delay)
+				time.Sleep(delay)
+				continue
+			}
+		}
+
+		// For other errors or max attempts reached, return the error
+		return err
+	}
+
+	return fmt.Errorf("max retries exceeded")
 }

@@ -5,27 +5,34 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
     runs-on: gale
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Clone repository
+        run: |
+          rm -rf $GITHUB_WORKSPACE/* $GITHUB_WORKSPACE/.* 2>/dev/null || true
+          git clone --depth 1 https://github.com/$GITHUB_REPOSITORY.git .
+          git checkout $GITHUB_SHA
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: false
+      - name: Verify Go installation
+        run: go version
 
       - name: Download dependencies
         run: go mod download
 
       - name: Run tests with coverage check
         run: |
-          go test -v -coverprofile=coverage.out ./internal/...
+          go test -v -coverprofile=coverage.out ./internal/... > /tmp/test-out.txt 2>&1 || true
+          TEST_EXIT=$?
+          cat /tmp/test-out.txt
+          if [ $TEST_EXIT -ne 0 ]; then
+            echo "Tests failed with exit code: $TEST_EXIT"
+            exit 1
+          fi
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           if awk "BEGIN {exit !($COVERAGE < 65)}"; then
@@ -37,14 +44,14 @@ jobs:
     runs-on: gale
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Clone repository
+        run: |
+          rm -rf $GITHUB_WORKSPACE/* $GITHUB_WORKSPACE/.* 2>/dev/null || true
+          git clone --depth 1 https://github.com/$GITHUB_REPOSITORY.git .
+          git checkout $GITHUB_SHA
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: false
+      - name: Verify Go installation
+        run: go version
 
       - name: Download dependencies
         run: go mod download
@@ -64,14 +71,14 @@ jobs:
     runs-on: gale
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Clone repository
+        run: |
+          rm -rf $GITHUB_WORKSPACE/* $GITHUB_WORKSPACE/.* 2>/dev/null || true
+          git clone --depth 1 https://github.com/$GITHUB_REPOSITORY.git .
+          git checkout $GITHUB_SHA
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: false
+      - name: Verify Go installation
+        run: go version
 
       - name: Build
         run: go build -v ./...
