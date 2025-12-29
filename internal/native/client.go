@@ -373,29 +373,40 @@ func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 	startTime := time.Now()
 	iteration := 0
 
+	// CRITICAL: Wait for Post steps to initialize after Runner.Listener exits
+	// Post steps may take several seconds to start
+	initialWait := 10 * time.Second
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Waiting %v for Post steps to initialize...\n", initialWait)
+	time.Sleep(initialWait)
+
 	for time.Now().Before(deadline) {
 		iteration++
 
-		// Check both process group AND processes with open files in directory
+		// Check process group
 		pgAlive := false
 		if runner.PGID > 0 {
 			pgAlive, _ = processGroupAlive(runner.PGID)
 		}
 
 		// Use multiple methods to find processes using the runner directory:
-		// 1. pgrep -f: Fast, finds processes with directory in command line
-		// 2. lsof +D: Slower but catches processes with open file handles
-		pgrepPids := getProcessesViaPgrep(runner.Dir)
+		// 1. lsof -d cwd: Processes with runner dir as current working directory (most reliable)
+		// 2. lsof +D: Processes with open file handles in directory
+		// 3. Check for recent temp scripts (indicates active steps)
+		cwdPids := getProcessesByCwd(runner.Dir)
 		lsofPids := getProcessesViaLsof(runner.Dir)
+		hasRecentScripts := hasRecentTempScripts(runner.Dir)
 
-		allDone := !pgAlive && len(pgrepPids) == 0 && len(lsofPids) == 0
+		allDone := !pgAlive && len(cwdPids) == 0 && len(lsofPids) == 0 && !hasRecentScripts
 		if allDone {
-			// Double-check after a short delay to avoid race condition
-			// (brief gap between commands in shell script)
-			time.Sleep(1 * time.Second)
-			pgrepPids = getProcessesViaPgrep(runner.Dir)
+			// Wait longer to ensure we're not in a gap between steps
+			time.Sleep(5 * time.Second)
+
+			// Triple-check after delay
+			cwdPids = getProcessesByCwd(runner.Dir)
 			lsofPids = getProcessesViaLsof(runner.Dir)
-			if len(pgrepPids) == 0 && len(lsofPids) == 0 {
+			hasRecentScripts = hasRecentTempScripts(runner.Dir)
+
+			if len(cwdPids) == 0 && len(lsofPids) == 0 && !hasRecentScripts {
 				fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes completed after %v (iterations=%d)\n",
 					time.Since(startTime), iteration)
 				return
@@ -403,8 +414,8 @@ func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 		}
 
 		if iteration%10 == 0 {
-			fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting: pgAlive=%v, pgrepPids=%v, lsofPids=%v (elapsed=%v)\n",
-				iteration, pgAlive, pgrepPids, lsofPids, time.Since(startTime))
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting: pgAlive=%v, cwdPids=%v, lsofPids=%v, hasRecentScripts=%v (elapsed=%v)\n",
+				iteration, pgAlive, cwdPids, lsofPids, hasRecentScripts, time.Since(startTime))
 		}
 		time.Sleep(checkInterval)
 	}
@@ -451,10 +462,12 @@ func processAlive(pid int) (bool, error) {
 	return false, err
 }
 
-// getProcessesViaPgrep uses pgrep to find processes with directory in command line.
-// This is fast and catches bash scripts running in the runner directory.
-func getProcessesViaPgrep(dir string) []string {
-	cmd := exec.Command("pgrep", "-f", dir)
+// getProcessesByCwd finds processes with the runner directory as their current working directory.
+// This is the most reliable method as job scripts run with CWD set to the runner work dir.
+func getProcessesByCwd(dir string) []string {
+	// lsof -d cwd finds processes by their current working directory
+	cmd := exec.Command("sh", "-c",
+		fmt.Sprintf("lsof -d cwd 2>/dev/null | grep -F '%s' | awk '{print $2}' | sort -u", dir))
 	output, err := cmd.Output()
 	if err != nil || len(output) == 0 {
 		return nil
@@ -464,7 +477,7 @@ func getProcessesViaPgrep(dir string) []string {
 	var pids []string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line != "" {
+		if line != "" && line != "PID" {
 			pids = append(pids, line)
 		}
 	}
@@ -472,7 +485,7 @@ func getProcessesViaPgrep(dir string) []string {
 }
 
 // getProcessesViaLsof uses lsof to find processes with open files in directory.
-// This catches job scripts that run in their own process group.
+// This catches processes that have file handles open in the runner directory.
 func getProcessesViaLsof(dir string) []string {
 	// lsof +D recursively searches directory for open files
 	// Use -t for terse output (just PIDs)
@@ -491,6 +504,30 @@ func getProcessesViaLsof(dir string) []string {
 		}
 	}
 	return pids
+}
+
+// hasRecentTempScripts checks if there are recently modified temp scripts in the runner directory.
+// GitHub Actions creates .sh files in _work/_temp/ for each step. Recent files indicate active steps.
+func hasRecentTempScripts(runnerDir string) bool {
+	tempDir := filepath.Join(runnerDir, "_work", "_temp")
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		return false
+	}
+
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".sh") {
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			// If script was modified in last 30 seconds, step is likely still running
+			if time.Since(info.ModTime()) < 30*time.Second {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *Client) ListRunners(ctx context.Context) ([]Runner, error) {
