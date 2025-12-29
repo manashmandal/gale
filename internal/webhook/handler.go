@@ -396,7 +396,8 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 				"job_id", jobID,
 				"runner_id", runnerID,
 			)
-			_ = h.runner.RemoveRunner(ctx, runnerID)
+			// Don't remove immediately - Post steps may still be running
+			// Let periodic cleanup handle directory removal
 			return
 		}
 	}
@@ -421,8 +422,8 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
-	// Force remove
-	h.logger.Info("removing runner",
+	// Force remove only after timeout
+	h.logger.Info("removing runner after timeout",
 		"job_id", jobID,
 		"runner_id", runnerID,
 	)
