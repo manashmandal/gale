@@ -245,11 +245,23 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 }
 
 func (c *Client) waitForCompletion(runner *Runner) {
+	var exitCode int
+	var exitErr error
+
 	if runner.cmd != nil {
-		_ = runner.cmd.Wait()
+		exitErr = runner.cmd.Wait()
+		if runner.cmd.ProcessState != nil {
+			exitCode = runner.cmd.ProcessState.ExitCode()
+		}
 	}
 
+	// Log exit information to the runner's log file before closing
 	if runner.logFile != nil {
+		if exitErr != nil {
+			fmt.Fprintf(runner.logFile, "\n[GALE] Runner exited with error: %v (exit code: %d)\n", exitErr, exitCode)
+		} else {
+			fmt.Fprintf(runner.logFile, "\n[GALE] Runner exited normally (exit code: %d)\n", exitCode)
+		}
 		runner.logFile.Close()
 	}
 
