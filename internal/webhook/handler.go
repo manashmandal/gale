@@ -521,15 +521,14 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return
 	}
 
-	// On macOS without --once flag, the runner won't exit on its own after the job.
-	// Wait for Post steps to complete, then send SIGTERM to stop the runner.
-	// Post steps can take variable time - we need to wait long enough for the runner
-	// to finish reporting to GitHub before killing it. 4 minutes should be sufficient.
-	postStepWait := 240 * time.Second
-	h.logger.Info("[DEBUG] waiting for Post steps to complete before stopping runner",
+	// With --once flag on macOS, the runner should exit on its own after completing all steps.
+	// This timeout is a safety net in case something goes wrong.
+	// 2 minutes should be sufficient for Post steps to complete.
+	postStepWait := 120 * time.Second
+	h.logger.Info("[DEBUG] waiting for runner to exit (with --once flag, should exit after Post steps)",
 		"job_id", jobID,
 		"runner_id", runnerID,
-		"wait_duration", postStepWait,
+		"timeout", postStepWait,
 	)
 
 	// Poll while waiting - runner might exit on its own (ephemeral/--once mode)

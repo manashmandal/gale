@@ -215,10 +215,14 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 	ghRunnerID, _ := readLocalRunnerID(filepath.Join(runnerDir, ".runner"))
 
 	runScript := filepath.Join(runnerDir, "run.sh")
-	// On macOS (non-ephemeral), don't use --once flag.
-	// The runner will keep waiting for jobs, but we'll send SIGTERM after the job completes.
-	// This allows Post steps to complete properly.
+	// On macOS, we must use --once flag (NOT --ephemeral).
+	// - --ephemeral: Causes Runner.Listener to exit BEFORE Runner.Worker completes Post steps (GitHub runner bug)
+	// - --once: Makes runner exit after ONE complete job (including Post steps), then exit cleanly
+	// On Linux with --ephemeral, the runner handles this properly.
 	runArgs := []string{}
+	if runtime.GOOS == "darwin" {
+		runArgs = append(runArgs, "--once")
+	}
 	runCmd := exec.Command(runScript, runArgs...)
 	runCmd.Dir = runnerDir
 	runCmd.Env = os.Environ()
@@ -367,58 +371,29 @@ func (c *Client) waitForCompletion(runner *Runner) {
 }
 
 // waitForAllProcesses waits for all processes using the runner directory to exit.
-// This includes both the runner's process group AND any job scripts that may run
-// in their own process group.
+// With --once flag, the runner exits cleanly after completing all steps (including Post steps).
+// This is a safety check to ensure any orphaned child processes are also complete.
 func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 	deadline := time.Now().Add(maxWait)
 	checkInterval := 2 * time.Second
 	startTime := time.Now()
 	iteration := 0
 
-	// CRITICAL: On macOS, the runner might exit before Post steps complete.
-	// We need to wait a minimum time to give Post steps a chance to run,
-	// even if process detection shows no processes.
-	// Post Setup Go can take 10-20 seconds, Post Checkout is usually quick.
-	minWaitDuration := 45 * time.Second
-	minWaitDeadline := time.Now().Add(minWaitDuration)
-
-	// Initial wait for Post steps to start
-	initialWait := 10 * time.Second
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Waiting %v for Post steps to initialize (minimum wait: %v)...\n", initialWait, minWaitDuration)
-	time.Sleep(initialWait)
-
 	for time.Now().Before(deadline) {
 		iteration++
 
-		// Check process group
 		pgAlive := false
 		if runner.PGID > 0 {
 			pgAlive, _ = processGroupAlive(runner.PGID)
 		}
 
-		// Use multiple methods to find processes using the runner directory:
-		// 1. lsof -d cwd: Processes with runner dir as current working directory (most reliable)
-		// 2. lsof +D: Processes with open file handles in directory
-		// 3. Check for recent temp scripts (indicates active steps)
 		cwdPids := getProcessesByCwd(runner.Dir)
 		lsofPids := getProcessesViaLsof(runner.Dir)
 		hasRecentScripts := hasRecentTempScripts(runner.Dir)
 
 		allDone := !pgAlive && len(cwdPids) == 0 && len(lsofPids) == 0 && !hasRecentScripts
 		if allDone {
-			// Even if no processes detected, wait until minimum duration has passed
-			// This handles cases where macOS runner exits before Post steps complete
-			if time.Now().Before(minWaitDeadline) {
-				remaining := time.Until(minWaitDeadline)
-				fmt.Fprintf(os.Stderr, "[GALE DEBUG] No processes detected, but waiting %v more (minimum wait not reached)\n", remaining)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			// Wait longer to ensure we're not in a gap between steps
-			time.Sleep(5 * time.Second)
-
-			// Triple-check after delay
+			time.Sleep(2 * time.Second)
 			cwdPids = getProcessesByCwd(runner.Dir)
 			lsofPids = getProcessesViaLsof(runner.Dir)
 			hasRecentScripts = hasRecentTempScripts(runner.Dir)
