@@ -154,13 +154,14 @@ func (h *Handler) cleanupLoop(ctx context.Context) {
 }
 
 func (h *Handler) cleanupExitedContainers() {
+	h.logger.Debug("[DEBUG] cleanupExitedContainers running")
 	cleaned, err := h.runner.CleanupExitedRunners(context.Background())
 	if err != nil {
 		h.logger.Debug("cleanup error", "error", err)
 		return
 	}
 	if cleaned > 0 {
-		h.logger.Info("cleaned up exited runners", "count", cleaned)
+		h.logger.Warn("[DEBUG] cleaned up exited runners", "count", cleaned)
 	}
 }
 
@@ -362,6 +363,13 @@ func (h *Handler) handleCompleted(ctx context.Context, event *WorkflowJobEvent) 
 	}
 	h.mu.Unlock()
 
+	h.logger.Info("[DEBUG] handleCompleted called",
+		"job_id", event.WorkflowJob.ID,
+		"runner_id", runnerID,
+		"exists", exists,
+		"status", event.WorkflowJob.Status,
+	)
+
 	if exists {
 		h.logger.Info("job completed, initiating graceful shutdown",
 			"job_id", event.WorkflowJob.ID,
@@ -375,7 +383,13 @@ func (h *Handler) handleCompleted(ctx context.Context, event *WorkflowJobEvent) 
 func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 	ctx := context.Background()
 
+	h.logger.Info("[DEBUG] gracefulShutdown started",
+		"job_id", jobID,
+		"runner_id", runnerID,
+	)
+
 	if h.runner == nil {
+		h.logger.Info("[DEBUG] gracefulShutdown: runner is nil, returning")
 		return // Handler was closed
 	}
 
@@ -387,16 +401,22 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 			return // Handler was closed
 		}
 		exited, err := h.runner.IsRunnerExited(ctx, runnerID)
+		h.logger.Info("[DEBUG] gracefulShutdown poll",
+			"iteration", i,
+			"exited", exited,
+			"error", err,
+		)
 		if err != nil {
 			h.logger.Debug("error checking runner status", "error", err)
 			break
 		}
 		if exited {
-			h.logger.Info("runner exited gracefully",
+			h.logger.Info("runner exited gracefully - NOT removing (letting cleanup handle it)",
 				"job_id", jobID,
 				"runner_id", runnerID,
 			)
-			_ = h.runner.RemoveRunner(ctx, runnerID)
+			// Don't remove immediately - Post steps may still be running
+			// Let periodic cleanup handle directory removal
 			return
 		}
 	}
@@ -406,7 +426,7 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 	}
 
 	// Runner still running after 30s, send SIGTERM
-	h.logger.Warn("runner did not exit, sending SIGTERM",
+	h.logger.Warn("[DEBUG] runner did not exit in 30s, sending SIGTERM",
 		"job_id", jobID,
 		"runner_id", runnerID,
 	)
@@ -421,8 +441,8 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
-	// Force remove
-	h.logger.Info("removing runner",
+	// Force remove only after timeout
+	h.logger.Warn("[DEBUG] removing runner after timeout (THIS SHOULD NOT HAPPEN NORMALLY)",
 		"job_id", jobID,
 		"runner_id", runnerID,
 	)

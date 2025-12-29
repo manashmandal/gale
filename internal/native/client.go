@@ -43,8 +43,12 @@ type Runner struct {
 	Status    string
 	Repo      string
 	StartedAt time.Time
+	ExitedAt  time.Time
 	cmd       *exec.Cmd
+	logFile   *os.File
 }
+
+const cleanupGracePeriod = 2 * time.Minute
 
 type RunnerConfig struct {
 	Token      string
@@ -88,6 +92,9 @@ func (c *Client) Close() error {
 	for _, r := range c.runners {
 		if r.cmd != nil && r.cmd.Process != nil {
 			_ = r.cmd.Process.Signal(syscall.SIGTERM)
+		}
+		if r.logFile != nil {
+			r.logFile.Close()
 		}
 	}
 	return nil
@@ -197,12 +204,22 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		runCmd.Env = append(runCmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
+	// Capture runner output to log file for debugging
+	logFile, err := os.OpenFile(filepath.Join(runnerDir, "runner.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		runCmd.Stdout = logFile
+		runCmd.Stderr = logFile
+	}
+
 	// Run in its own process group to prevent signal interference from parent
 	runCmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
 
 	if err := runCmd.Start(); err != nil {
+		if logFile != nil {
+			logFile.Close()
+		}
 		os.RemoveAll(runnerDir)
 		return nil, fmt.Errorf("starting runner: %w", err)
 	}
@@ -215,6 +232,7 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		Repo:      cfg.RepoURL,
 		StartedAt: time.Now(),
 		cmd:       runCmd,
+		logFile:   logFile,
 	}
 
 	c.mu.Lock()
@@ -227,15 +245,221 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 }
 
 func (c *Client) waitForCompletion(runner *Runner) {
+	var exitCode int
+	var exitErr error
+
 	if runner.cmd != nil {
-		_ = runner.cmd.Wait()
+		exitErr = runner.cmd.Wait()
+		if runner.cmd.ProcessState != nil {
+			exitCode = runner.cmd.ProcessState.ExitCode()
+		}
 	}
+
+	listenerExitTime := time.Now()
+
+	// Check if process was signaled
+	signaled := false
+	var signal syscall.Signal
+	if runner.cmd != nil && runner.cmd.ProcessState != nil {
+		if ws, ok := runner.cmd.ProcessState.Sys().(syscall.WaitStatus); ok {
+			signaled = ws.Signaled()
+			if signaled {
+				signal = ws.Signal()
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Runner.Listener %s exited at %v (code=%d, err=%v, signaled=%v, signal=%v)\n",
+		runner.ID, listenerExitTime, exitCode, exitErr, signaled, signal)
+
+	// Log exit information to the runner's log file before closing
+	if runner.logFile != nil {
+		if exitErr != nil {
+			fmt.Fprintf(runner.logFile, "\n[GALE] Runner.Listener exited with error: %v (exit code: %d)\n", exitErr, exitCode)
+		} else {
+			fmt.Fprintf(runner.logFile, "\n[GALE] Runner.Listener exited normally (exit code: %d)\n", exitCode)
+		}
+		runner.logFile.Close()
+		runner.logFile = nil
+	}
+
+	// Wait for all child processes (Runner.Worker, Post steps, etc.) to complete
+	// This is critical because Runner.Listener may exit before Post steps finish
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Waiting for child processes in %s to complete...\n", runner.Dir)
+	c.waitForAllProcesses(runner, 5*time.Minute)
+
+	actualExitTime := time.Now()
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes in %s completed at %v (waited %v)\n",
+		runner.Dir, actualExitTime, actualExitTime.Sub(listenerExitTime))
 
 	c.mu.Lock()
 	if r, exists := c.runners[runner.ID]; exists {
 		r.Status = "exited"
+		r.ExitedAt = actualExitTime // Use time when ALL processes exited
 	}
 	c.mu.Unlock()
+}
+
+// waitForAllProcesses waits for all processes running in the runner directory to exit
+func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
+	deadline := time.Now().Add(maxWait)
+	checkInterval := 2 * time.Second
+	startTime := time.Now()
+
+	// Always wait at least 5 seconds initially - Runner.Worker may not have
+	// opened files yet when Runner.Listener exits
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Initial wait (5s) for Runner.Worker to start...\n")
+	time.Sleep(5 * time.Second)
+
+	// Log what detection methods find initially
+	c.logProcessDetectionDetails(runner.Dir)
+
+	iteration := 0
+	for time.Now().Before(deadline) {
+		pids := c.getProcessesInDir(runner.Dir)
+		iteration++
+
+		if len(pids) == 0 {
+			// Double-check after a short delay to avoid race condition
+			time.Sleep(1 * time.Second)
+			pids = c.getProcessesInDir(runner.Dir)
+			if len(pids) == 0 {
+				fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes completed after %v (iterations=%d)\n",
+					time.Since(startTime), iteration)
+				return
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting for %d processes in %s (elapsed=%v)\n",
+			iteration, len(pids), runner.Dir, time.Since(startTime))
+
+		// Every 10 iterations, log detailed detection info
+		if iteration%10 == 0 {
+			c.logProcessDetectionDetails(runner.Dir)
+		}
+
+		time.Sleep(checkInterval)
+	}
+
+	// Timeout - log warning but continue
+	pids := c.getProcessesInDir(runner.Dir)
+	if len(pids) > 0 {
+		fmt.Fprintf(os.Stderr, "[GALE WARN] Timeout waiting for processes in %s after %v, still running: %v\n",
+			runner.Dir, time.Since(startTime), pids)
+	}
+}
+
+// logProcessDetectionDetails logs what each detection method finds
+func (c *Client) logProcessDetectionDetails(dir string) {
+	lsofPids := c.getProcessesViaLsof(dir)
+	pgrepPids := c.getProcessesViaPgrep(dir)
+	workerPids := c.getRunnerWorkerProcesses()
+
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Process detection details for %s:\n", dir)
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG]   lsof +D: %v\n", lsofPids)
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG]   pgrep -f dir: %v\n", pgrepPids)
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG]   pgrep Runner.Worker: %v\n", workerPids)
+}
+
+// getProcessesInDir returns PIDs of processes related to the runner directory
+// Uses multiple detection methods for robustness on macOS:
+// 1. lsof - finds processes with open files in directory
+// 2. pgrep - finds processes with directory in command line
+// 3. ps - finds Runner.Worker/Runner.Listener processes
+func (c *Client) getProcessesInDir(dir string) []string {
+	pidSet := make(map[string]bool)
+
+	// Method 1: Use lsof to find processes with open files in the directory
+	// This is the most reliable method on macOS as it catches orphaned processes
+	lsofPids := c.getProcessesViaLsof(dir)
+	for _, pid := range lsofPids {
+		pidSet[pid] = true
+	}
+
+	// Method 2: Use pgrep to find processes with directory in command line
+	pgrepPids := c.getProcessesViaPgrep(dir)
+	for _, pid := range pgrepPids {
+		pidSet[pid] = true
+	}
+
+	// Method 3: Look for Runner.Worker processes specifically
+	// These may be running without the directory in their command line
+	workerPids := c.getRunnerWorkerProcesses()
+	for _, pid := range workerPids {
+		pidSet[pid] = true
+	}
+
+	var pids []string
+	for pid := range pidSet {
+		pids = append(pids, pid)
+	}
+
+	if len(pids) > 0 {
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] getProcessesInDir found %d processes: %v (lsof=%d, pgrep=%d, worker=%d)\n",
+			len(pids), pids, len(lsofPids), len(pgrepPids), len(workerPids))
+	}
+
+	return pids
+}
+
+// getProcessesViaLsof uses lsof to find processes with open files in directory
+func (c *Client) getProcessesViaLsof(dir string) []string {
+	// lsof +D recursively searches directory for open files
+	// Use -t for terse output (just PIDs)
+	cmd := exec.Command("lsof", "-t", "+D", dir)
+	output, err := cmd.Output()
+	if err != nil || len(output) == 0 {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var pids []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
+}
+
+// getProcessesViaPgrep uses pgrep to find processes with directory in command line
+func (c *Client) getProcessesViaPgrep(dir string) []string {
+	cmd := exec.Command("pgrep", "-f", dir)
+	output, err := cmd.Output()
+	if err != nil || len(output) == 0 {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var pids []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
+}
+
+// getRunnerWorkerProcesses finds GitHub Actions Runner.Worker processes
+func (c *Client) getRunnerWorkerProcesses() []string {
+	// Look for Runner.Worker processes that may not have the directory in their command line
+	cmd := exec.Command("pgrep", "-f", "Runner.Worker")
+	output, err := cmd.Output()
+	if err != nil || len(output) == 0 {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var pids []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
 }
 
 func (c *Client) ListRunners(ctx context.Context) ([]Runner, error) {
@@ -278,21 +502,46 @@ func (c *Client) RemoveRunner(ctx context.Context, runnerID string) error {
 		_ = runner.cmd.Process.Kill()
 	}
 
+	if runner.logFile != nil {
+		runner.logFile.Close()
+	}
+
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] RemoveRunner called for %s, dir=%s\n", runnerID, runner.Dir)
+
+	// Kill any remaining processes in the runner directory before removing
+	pids := c.getProcessesInDir(runner.Dir)
+	if len(pids) > 0 {
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] Killing remaining processes before removal: %v\n", pids)
+		killCmd := exec.Command("pkill", "-9", "-f", runner.Dir)
+		_ = killCmd.Run()
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	return os.RemoveAll(runner.Dir)
 }
 
 func (c *Client) CleanupExitedRunners(ctx context.Context) (int, error) {
 	c.mu.Lock()
 	var toRemove []string
+	now := time.Now()
 	for id, r := range c.runners {
-		if r.Status == "exited" {
-			toRemove = append(toRemove, id)
+		if r.Status == "exited" && !r.ExitedAt.IsZero() {
+			elapsed := now.Sub(r.ExitedAt)
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] CleanupExitedRunners: runner %s status=%s elapsed=%v gracePeriod=%v willRemove=%v\n",
+				id, r.Status, elapsed, cleanupGracePeriod, elapsed >= cleanupGracePeriod)
+			if elapsed >= cleanupGracePeriod {
+				toRemove = append(toRemove, id)
+			}
+		} else if r.Status == "exited" {
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] CleanupExitedRunners: runner %s status=%s ExitedAt.IsZero=%v (skipping)\n",
+				id, r.Status, r.ExitedAt.IsZero())
 		}
 	}
 	c.mu.Unlock()
 
 	cleaned := 0
 	for _, id := range toRemove {
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] CleanupExitedRunners: removing runner %s\n", id)
 		if err := c.RemoveRunner(ctx, id); err == nil {
 			cleaned++
 		}
@@ -433,6 +682,8 @@ func extractTarGz(src, dest string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return err
 			}
+			// Remove existing file if it exists (handles partial extractions)
+			os.Remove(target)
 			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, os.FileMode(header.Mode))
 			if err != nil {
 				return err
@@ -443,6 +694,8 @@ func extractTarGz(src, dest string) error {
 			}
 			outFile.Close()
 		case tar.TypeSymlink:
+			// Remove existing file/symlink if it exists
+			os.Remove(target)
 			if err := os.Symlink(header.Linkname, target); err != nil {
 				return err
 			}
@@ -472,6 +725,7 @@ func copyDir(src, dest string) error {
 			if err != nil {
 				return err
 			}
+			os.Remove(destPath) // Remove existing if present
 			return os.Symlink(link, destPath)
 		}
 
