@@ -19,6 +19,10 @@
   <a href="#cicd-gotchas-for-self-hosted-runners">Gotchas</a>
 </p>
 
+<p align="center">
+  <img src="assets/gale-animation.gif" alt="Gale in action" width="600">
+</p>
+
 ---
 
 > **AI-Generated Code Disclaimer**
