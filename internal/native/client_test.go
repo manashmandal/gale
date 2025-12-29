@@ -212,8 +212,10 @@ func TestClient_CleanupExitedRunners(t *testing.T) {
 	os.MkdirAll(r1Dir, 0755)
 	os.MkdirAll(r2Dir, 0755)
 
-	client.runners["r1"] = &Runner{ID: "r1", Dir: r1Dir, Status: "exited"}
-	client.runners["r2"] = &Runner{ID: "r2", Dir: r2Dir, Status: "exited"}
+	// ExitedAt must be older than cleanupGracePeriod (2 minutes) to be cleaned up
+	oldExitTime := time.Now().Add(-3 * time.Minute)
+	client.runners["r1"] = &Runner{ID: "r1", Dir: r1Dir, Status: "exited", ExitedAt: oldExitTime}
+	client.runners["r2"] = &Runner{ID: "r2", Dir: r2Dir, Status: "exited", ExitedAt: oldExitTime}
 	client.runners["r3"] = &Runner{ID: "r3", Dir: "", Status: "running"}
 
 	count, err := client.CleanupExitedRunners(context.Background())
@@ -226,6 +228,30 @@ func TestClient_CleanupExitedRunners(t *testing.T) {
 
 	if len(client.runners) != 1 {
 		t.Errorf("len(runners) = %d, want 1", len(client.runners))
+	}
+}
+
+func TestClient_CleanupExitedRunners_GracePeriod(t *testing.T) {
+	tmpDir := t.TempDir()
+	client, _ := NewClient(tmpDir)
+
+	r1Dir := filepath.Join(tmpDir, "work", "r1")
+	os.MkdirAll(r1Dir, 0755)
+
+	// Recent exit - should NOT be cleaned up (within grace period)
+	recentExitTime := time.Now().Add(-30 * time.Second)
+	client.runners["r1"] = &Runner{ID: "r1", Dir: r1Dir, Status: "exited", ExitedAt: recentExitTime}
+
+	count, err := client.CleanupExitedRunners(context.Background())
+	if err != nil {
+		t.Fatalf("CleanupExitedRunners() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 (runner should not be cleaned up within grace period)", count)
+	}
+
+	if len(client.runners) != 1 {
+		t.Errorf("len(runners) = %d, want 1 (runner should remain)", len(client.runners))
 	}
 }
 

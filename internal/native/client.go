@@ -43,9 +43,12 @@ type Runner struct {
 	Status    string
 	Repo      string
 	StartedAt time.Time
+	ExitedAt  time.Time
 	cmd       *exec.Cmd
 	logFile   *os.File
 }
+
+const cleanupGracePeriod = 2 * time.Minute
 
 type RunnerConfig struct {
 	Token      string
@@ -253,6 +256,7 @@ func (c *Client) waitForCompletion(runner *Runner) {
 	c.mu.Lock()
 	if r, exists := c.runners[runner.ID]; exists {
 		r.Status = "exited"
+		r.ExitedAt = time.Now()
 	}
 	c.mu.Unlock()
 }
@@ -307,9 +311,12 @@ func (c *Client) RemoveRunner(ctx context.Context, runnerID string) error {
 func (c *Client) CleanupExitedRunners(ctx context.Context) (int, error) {
 	c.mu.Lock()
 	var toRemove []string
+	now := time.Now()
 	for id, r := range c.runners {
-		if r.Status == "exited" {
-			toRemove = append(toRemove, id)
+		if r.Status == "exited" && !r.ExitedAt.IsZero() {
+			if now.Sub(r.ExitedAt) >= cleanupGracePeriod {
+				toRemove = append(toRemove, id)
+			}
 		}
 	}
 	c.mu.Unlock()

@@ -3,20 +3,36 @@
 ## 2025-12-29 - Native Runner Post Steps Fix
 
 ### Issue
-Native runners' Post steps (like "Post Setup Go") were failing because Gale was deleting the runner directory too early. The runner process exits after main steps complete, but Post steps continue running. Gale detected the exit and immediately removed the directory, killing Post steps mid-execution.
+Native runners' Post steps (like "Post Setup Go") were failing because Gale was deleting the runner directory too early. The runner process exits after main steps complete, but child processes (including the shell script running the step) continue running. Gale detected the exit and immediately removed the directory, causing subsequent commands in the same step to fail.
+
+Example: `go test` passes, but `go tool cover` fails immediately after with "No such file or directory" because the Go binary was removed mid-step.
 
 ### Root Cause
-`gracefulShutdown` called `RemoveRunner` immediately when it detected the runner process had exited. But GitHub Actions Post steps run as separate processes that continue after the main runner exits.
+Two issues:
+1. `gracefulShutdown` called `RemoveRunner` immediately when it detected the runner process had exited
+2. Even after deferring to periodic cleanup, `CleanupExitedRunners` would remove directories as soon as `Status == "exited"` was set
+
+The GitHub Actions runner process (`Runner.Listener`) exits when it considers the job "done", but the actual step shell scripts may still be executing as child processes.
 
 ### Fix
-Don't remove runner directory immediately in `gracefulShutdown`. Let the periodic cleanup (every 30 seconds) handle removal instead, giving Post steps time to complete.
+1. Don't remove runner directory immediately in `gracefulShutdown` - defer to periodic cleanup
+2. Add 2-minute grace period before cleaning up exited runners:
 
 ```go
-if exited {
-    h.logger.Info("runner exited gracefully", ...)
-    // Don't remove immediately - Post steps may still be running
-    // Let periodic cleanup handle directory removal
-    return
+const cleanupGracePeriod = 2 * time.Minute
+
+type Runner struct {
+    // ... existing fields
+    ExitedAt time.Time  // Track when runner exited
+}
+
+func (c *Client) CleanupExitedRunners(ctx context.Context) (int, error) {
+    // Only cleanup if exited more than 2 minutes ago
+    if r.Status == "exited" && !r.ExitedAt.IsZero() {
+        if now.Sub(r.ExitedAt) >= cleanupGracePeriod {
+            // Safe to remove
+        }
+    }
 }
 ```
 
@@ -26,7 +42,8 @@ if exited {
 
 ### Files Modified
 - `internal/webhook/handler.go` - Defer cleanup to periodic task
-- `internal/native/client.go` - Handle existing files in extraction, add logging
+- `internal/native/client.go` - Add grace period, handle existing files in extraction, add logging
+- `internal/native/client_test.go` - Add tests for grace period behavior
 
 ---
 
