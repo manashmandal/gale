@@ -31,6 +31,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+          cache: false
 
       - name: Generate CalVer tag
         if: github.event_name == 'workflow_dispatch'
