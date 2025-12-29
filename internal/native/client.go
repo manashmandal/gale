@@ -382,15 +382,20 @@ func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 			pgAlive, _ = processGroupAlive(runner.PGID)
 		}
 
-		// Use lsof to find any process with open files in the runner directory
-		// This catches job scripts that run in their own process group
+		// Use multiple methods to find processes using the runner directory:
+		// 1. pgrep -f: Fast, finds processes with directory in command line
+		// 2. lsof +D: Slower but catches processes with open file handles
+		pgrepPids := getProcessesViaPgrep(runner.Dir)
 		lsofPids := getProcessesViaLsof(runner.Dir)
 
-		if !pgAlive && len(lsofPids) == 0 {
+		allDone := !pgAlive && len(pgrepPids) == 0 && len(lsofPids) == 0
+		if allDone {
 			// Double-check after a short delay to avoid race condition
-			time.Sleep(500 * time.Millisecond)
+			// (brief gap between commands in shell script)
+			time.Sleep(1 * time.Second)
+			pgrepPids = getProcessesViaPgrep(runner.Dir)
 			lsofPids = getProcessesViaLsof(runner.Dir)
-			if len(lsofPids) == 0 {
+			if len(pgrepPids) == 0 && len(lsofPids) == 0 {
 				fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes completed after %v (iterations=%d)\n",
 					time.Since(startTime), iteration)
 				return
@@ -398,8 +403,8 @@ func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 		}
 
 		if iteration%10 == 0 {
-			fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting: pgAlive=%v, lsofPids=%v (elapsed=%v)\n",
-				iteration, pgAlive, lsofPids, time.Since(startTime))
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] [iter=%d] Still waiting: pgAlive=%v, pgrepPids=%v, lsofPids=%v (elapsed=%v)\n",
+				iteration, pgAlive, pgrepPids, lsofPids, time.Since(startTime))
 		}
 		time.Sleep(checkInterval)
 	}
@@ -444,6 +449,26 @@ func processAlive(pid int) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+// getProcessesViaPgrep uses pgrep to find processes with directory in command line.
+// This is fast and catches bash scripts running in the runner directory.
+func getProcessesViaPgrep(dir string) []string {
+	cmd := exec.Command("pgrep", "-f", dir)
+	output, err := cmd.Output()
+	if err != nil || len(output) == 0 {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var pids []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
 }
 
 // getProcessesViaLsof uses lsof to find processes with open files in directory.
