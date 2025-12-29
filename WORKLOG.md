@@ -1,5 +1,33 @@
 # Work Log
 
+## 2025-12-29 - Native Runner Debugging (macOS Issue)
+
+### Issue
+Native runners on macOS were crashing during CI "Post Setup Go" cleanup steps. The process group isolation fix from earlier didn't resolve the issue on macOS (though the Linux native runner works fine).
+
+### Investigation
+- Build job (ran on Linux) completed successfully
+- Test/lint jobs (ran on macOS) died during Post steps
+- Added runner output logging to capture stdout/stderr for debugging
+
+### Changes
+Added runner output logging to file (`runner.log` in runner directory):
+```go
+logFile, err := os.OpenFile(filepath.Join(runnerDir, "runner.log"), ...)
+runCmd.Stdout = logFile
+runCmd.Stderr = logFile
+```
+
+This will help diagnose why the macOS runner is dying during Post steps.
+
+### Files Modified
+- `internal/native/client.go` - Added logFile capture and proper cleanup
+
+### Status
+**Ongoing** - Need to check runner.log on macOS host after next run to see crash details.
+
+---
+
 ## 2025-12-28 - Native Runner Process Group Isolation
 
 ### Issue
