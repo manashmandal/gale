@@ -456,6 +456,8 @@ func extractTarGz(src, dest string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return err
 			}
+			// Remove existing file if it exists (handles partial extractions)
+			os.Remove(target)
 			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, os.FileMode(header.Mode))
 			if err != nil {
 				return err
@@ -466,6 +468,8 @@ func extractTarGz(src, dest string) error {
 			}
 			outFile.Close()
 		case tar.TypeSymlink:
+			// Remove existing file/symlink if it exists
+			os.Remove(target)
 			if err := os.Symlink(header.Linkname, target); err != nil {
 				return err
 			}
@@ -495,6 +499,7 @@ func copyDir(src, dest string) error {
 			if err != nil {
 				return err
 			}
+			os.Remove(destPath) // Remove existing if present
 			return os.Symlink(link, destPath)
 		}
 
