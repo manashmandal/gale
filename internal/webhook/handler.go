@@ -393,9 +393,14 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
+	// Give Post steps time to start - GitHub sends "completed" webhook when main steps
+	// finish, but Post steps still need to run. Wait 10 seconds before polling.
+	h.logger.Info("[DEBUG] gracefulShutdown: waiting 10s for Post steps to start")
+	time.Sleep(10 * time.Second)
+
 	// Wait for runner to finish reporting to GitHub (ephemeral runners exit after job)
-	// Check every 2 seconds for up to 30 seconds
-	for i := 0; i < 15; i++ {
+	// Check every 2 seconds for up to 60 seconds (increased from 30s)
+	for i := 0; i < 30; i++ {
 		time.Sleep(2 * time.Second)
 		if h.runner == nil {
 			return // Handler was closed
@@ -425,8 +430,8 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
-	// Runner still running after 30s, send SIGTERM
-	h.logger.Warn("[DEBUG] runner did not exit in 30s, sending SIGTERM",
+	// Runner still running after 70s (10s initial + 60s polling), send SIGTERM
+	h.logger.Warn("[DEBUG] runner did not exit in 70s, sending SIGTERM",
 		"job_id", jobID,
 		"runner_id", runnerID,
 	)
