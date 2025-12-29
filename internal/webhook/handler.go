@@ -356,21 +356,41 @@ func (h *Handler) monitorRunnerStartup(runnerID string, jobID int64, jobName str
 }
 
 func (h *Handler) handleCompleted(ctx context.Context, event *WorkflowJobEvent) {
+	// The webhook payload includes the actual runner that ran the job
+	// Use that instead of our spawn-time mapping (which may be wrong due to GitHub's job assignment)
+	actualRunnerName := event.WorkflowJob.RunnerName
+	actualRunnerID := ""
+
+	// Our runners are named "gale-native-<uuid>" - extract the UUID
+	if strings.HasPrefix(actualRunnerName, "gale-native-") {
+		actualRunnerID = strings.TrimPrefix(actualRunnerName, "gale-native-")
+	}
+
+	// Clean up our mapping (for bookkeeping, even if the mapping was wrong)
 	h.mu.Lock()
-	runnerID, exists := h.activeRunners[event.WorkflowJob.ID]
+	mappedRunnerID, exists := h.activeRunners[event.WorkflowJob.ID]
 	if exists {
 		delete(h.activeRunners, event.WorkflowJob.ID)
 	}
 	h.mu.Unlock()
 
+	// Use the actual runner ID from webhook if available, otherwise fall back to mapped
+	runnerID := actualRunnerID
+	if runnerID == "" {
+		runnerID = mappedRunnerID
+	}
+
 	h.logger.Info("[DEBUG] handleCompleted called",
 		"job_id", event.WorkflowJob.ID,
-		"runner_id", runnerID,
+		"actual_runner_name", actualRunnerName,
+		"actual_runner_id", actualRunnerID,
+		"mapped_runner_id", mappedRunnerID,
+		"using_runner_id", runnerID,
 		"exists", exists,
 		"status", event.WorkflowJob.Status,
 	)
 
-	if exists {
+	if runnerID != "" {
 		h.logger.Info("job completed, initiating graceful shutdown",
 			"job_id", event.WorkflowJob.ID,
 			"runner_id", runnerID,
@@ -393,29 +413,41 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
-	// The native runner client now handles waiting for all processes (including Post steps)
-	// via process group tracking. We just need to poll until the runner marks itself as exited.
-	// Wait up to 6 minutes to allow Post steps plenty of time to complete.
-	// Check every 5 seconds for up to 72 iterations (6 minutes total).
-	for i := 0; i < 72; i++ {
+	// First check if runner already exited (e.g., ephemeral mode on Linux, or --once mode)
+	exited, err := h.runner.IsRunnerExited(ctx, runnerID)
+	if err == nil && exited {
+		h.logger.Info("runner already exited",
+			"job_id", jobID,
+			"runner_id", runnerID,
+		)
+		return
+	}
+
+	// On macOS without --once flag, the runner won't exit on its own after the job.
+	// Wait for Post steps to complete, then send SIGTERM to stop the runner.
+	// Post Setup Go can take 30-60 seconds for large Go installations, Post Checkout is quick.
+	// Using 120 seconds to be safe for slower jobs.
+	postStepWait := 120 * time.Second
+	h.logger.Info("[DEBUG] waiting for Post steps to complete before stopping runner",
+		"job_id", jobID,
+		"runner_id", runnerID,
+		"wait_duration", postStepWait,
+	)
+
+	// Poll while waiting - runner might exit on its own (ephemeral/--once mode)
+	deadline := time.Now().Add(postStepWait)
+	for time.Now().Before(deadline) {
 		time.Sleep(5 * time.Second)
 		if h.runner == nil {
 			return // Handler was closed
 		}
 		exited, err := h.runner.IsRunnerExited(ctx, runnerID)
-		if i%12 == 0 { // Log every minute
-			h.logger.Info("[DEBUG] gracefulShutdown poll",
-				"iteration", i,
-				"exited", exited,
-				"error", err,
-			)
-		}
 		if err != nil {
 			h.logger.Debug("error checking runner status", "error", err)
 			break
 		}
 		if exited {
-			h.logger.Info("runner exited gracefully",
+			h.logger.Info("runner exited gracefully during Post step wait",
 				"job_id", jobID,
 				"runner_id", runnerID,
 			)
@@ -427,8 +459,8 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 		return // Handler was closed
 	}
 
-	// Runner still running after 6 minutes - something is wrong, force stop
-	h.logger.Warn("runner did not exit in 6 minutes, forcing stop",
+	// Post step wait complete - now stop the runner gracefully
+	h.logger.Info("stopping runner after Post step wait",
 		"job_id", jobID,
 		"runner_id", runnerID,
 	)

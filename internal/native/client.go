@@ -175,9 +175,10 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		return nil, fmt.Errorf("creating work temp dir: %w", err)
 	}
 
-	// On macOS, the upstream runner's built-in `--ephemeral` mode can exit before Post steps complete.
-	// Work around this by registering as non-ephemeral and emulating ephemeral semantics with `run.sh --once`
-	// plus GitHub API de-registration after exit.
+	// On macOS, the upstream runner's built-in `--ephemeral` mode exits before Post steps complete.
+	// Workaround: Register as non-ephemeral and DON'T use --once flag.
+	// The runner will keep waiting for more jobs, but we'll send SIGTERM from gracefulShutdown
+	// after the job is done. This gives Post steps time to complete.
 	useGitHubEphemeral := runtime.GOOS != "darwin"
 
 	configArgs := []string{
@@ -214,10 +215,10 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 	ghRunnerID, _ := readLocalRunnerID(filepath.Join(runnerDir, ".runner"))
 
 	runScript := filepath.Join(runnerDir, "run.sh")
+	// On macOS (non-ephemeral), don't use --once flag.
+	// The runner will keep waiting for jobs, but we'll send SIGTERM after the job completes.
+	// This allows Post steps to complete properly.
 	runArgs := []string{}
-	if !useGitHubEphemeral {
-		runArgs = append(runArgs, "--once")
-	}
 	runCmd := exec.Command(runScript, runArgs...)
 	runCmd.Dir = runnerDir
 	runCmd.Env = os.Environ()
@@ -373,10 +374,16 @@ func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 	startTime := time.Now()
 	iteration := 0
 
-	// CRITICAL: Wait for Post steps to initialize after Runner.Listener exits
-	// Post steps may take several seconds to start
+	// CRITICAL: On macOS, the runner might exit before Post steps complete.
+	// We need to wait a minimum time to give Post steps a chance to run,
+	// even if process detection shows no processes.
+	// Post Setup Go can take 10-20 seconds, Post Checkout is usually quick.
+	minWaitDuration := 45 * time.Second
+	minWaitDeadline := time.Now().Add(minWaitDuration)
+
+	// Initial wait for Post steps to start
 	initialWait := 10 * time.Second
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Waiting %v for Post steps to initialize...\n", initialWait)
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Waiting %v for Post steps to initialize (minimum wait: %v)...\n", initialWait, minWaitDuration)
 	time.Sleep(initialWait)
 
 	for time.Now().Before(deadline) {
@@ -398,6 +405,15 @@ func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 
 		allDone := !pgAlive && len(cwdPids) == 0 && len(lsofPids) == 0 && !hasRecentScripts
 		if allDone {
+			// Even if no processes detected, wait until minimum duration has passed
+			// This handles cases where macOS runner exits before Post steps complete
+			if time.Now().Before(minWaitDeadline) {
+				remaining := time.Until(minWaitDeadline)
+				fmt.Fprintf(os.Stderr, "[GALE DEBUG] No processes detected, but waiting %v more (minimum wait not reached)\n", remaining)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
 			// Wait longer to ensure we're not in a gap between steps
 			time.Sleep(5 * time.Second)
 
