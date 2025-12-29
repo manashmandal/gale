@@ -516,6 +516,8 @@ func hasRecentTempScripts(runnerDir string) bool {
 	cmd := exec.Command("sh", "-c",
 		fmt.Sprintf("pgrep -f '%s.*\\.sh' 2>/dev/null", tempDir))
 	if output, err := cmd.Output(); err == nil && len(strings.TrimSpace(string(output))) > 0 {
+		pids := strings.TrimSpace(string(output))
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] hasRecentTempScripts: pgrep found running scripts, pids=%s\n", pids)
 		return true
 	}
 
@@ -532,7 +534,9 @@ func hasRecentTempScripts(runnerDir string) bool {
 				continue
 			}
 			// If script was created/modified in last 2 minutes, step might still be running
-			if time.Since(info.ModTime()) < 2*time.Minute {
+			age := time.Since(info.ModTime())
+			if age < 2*time.Minute {
+				fmt.Fprintf(os.Stderr, "[GALE DEBUG] hasRecentTempScripts: recent script %s age=%v\n", entry.Name(), age)
 				return true
 			}
 		}
