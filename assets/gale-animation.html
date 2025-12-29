@@ -53,9 +53,10 @@
     }
 
     .subtitle {
-      font-size: 16px;
+      font-size: 14px;
       color: #8b949e;
       margin-top: 4px;
+      white-space: nowrap;
     }
 
     /* GitHub Source - Top */
@@ -219,6 +220,36 @@
       box-shadow: 0 0 15px rgba(88, 166, 255, 0.8);
     }
 
+    /* Self-Hosted Container */
+    .self-hosted-container {
+      position: absolute;
+      top: 330px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 680px;
+      height: 400px;
+      border: 2px dashed #484f58;
+      border-radius: 24px;
+      background: rgba(22, 27, 34, 0.3);
+    }
+
+    .self-hosted-label {
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #0d1117;
+      padding: 4px 16px;
+      border-radius: 12px;
+      border: 1px solid #484f58;
+      color: #8b949e;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      white-space: nowrap;
+    }
+
     /* Gale Core */
     .gale-core {
       position: absolute;
@@ -231,6 +262,7 @@
       border-radius: 20px;
       padding: 20px 25px;
       box-shadow: 0 0 30px rgba(88, 166, 255, 0.15);
+      z-index: 2;
     }
 
     .gale-header {
@@ -783,7 +815,7 @@
     <div class="header">
       <img src="logo.png" alt="Gale" class="logo" onerror="this.style.display='none'">
       <div class="title">GALE</div>
-      <div class="subtitle">Just-In-Time Autoscaler for <b><i>Self Hosted</i></b> GitHub Actions in Private Repos</div>
+      <div class="subtitle">Just-In-Time Autoscaler for <b><i>Self Hosted</i></b> GitHub Actions Runners in Private Repos</div>
     </div>
 
     <!-- GitHub Source -->
@@ -810,6 +842,11 @@
     <!-- Connection 1: GitHub to Gale -->
     <div class="connection-node-top" id="conn-node-top"></div>
     <div class="connection connection-1" id="conn-1"></div>
+
+    <!-- Self-Hosted Container -->
+    <div class="self-hosted-container">
+      <div class="self-hosted-label">🖥️ Your Self-Hosted Infrastructure</div>
+    </div>
 
     <!-- Gale Core -->
     <div class="gale-core">
