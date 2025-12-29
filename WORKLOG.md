@@ -1,30 +1,32 @@
 # Work Log
 
-## 2025-12-29 - Native Runner Debugging (macOS Issue)
+## 2025-12-29 - Native Runner Post Steps Fix
 
 ### Issue
-Native runners on macOS were crashing during CI "Post Setup Go" cleanup steps. The process group isolation fix from earlier didn't resolve the issue on macOS (though the Linux native runner works fine).
+Native runners' Post steps (like "Post Setup Go") were failing because Gale was deleting the runner directory too early. The runner process exits after main steps complete, but Post steps continue running. Gale detected the exit and immediately removed the directory, killing Post steps mid-execution.
 
-### Investigation
-- Build job (ran on Linux) completed successfully
-- Test/lint jobs (ran on macOS) died during Post steps
-- Added runner output logging to capture stdout/stderr for debugging
+### Root Cause
+`gracefulShutdown` called `RemoveRunner` immediately when it detected the runner process had exited. But GitHub Actions Post steps run as separate processes that continue after the main runner exits.
 
-### Changes
-Added runner output logging to file (`runner.log` in runner directory):
+### Fix
+Don't remove runner directory immediately in `gracefulShutdown`. Let the periodic cleanup (every 30 seconds) handle removal instead, giving Post steps time to complete.
+
 ```go
-logFile, err := os.OpenFile(filepath.Join(runnerDir, "runner.log"), ...)
-runCmd.Stdout = logFile
-runCmd.Stderr = logFile
+if exited {
+    h.logger.Info("runner exited gracefully", ...)
+    // Don't remove immediately - Post steps may still be running
+    // Let periodic cleanup handle directory removal
+    return
+}
 ```
 
-This will help diagnose why the macOS runner is dying during Post steps.
+### Additional Fixes
+- Fixed symlink/file extraction errors when runner cache has partial extraction
+- Added runner stdout/stderr logging to `runner.log` for debugging
 
 ### Files Modified
-- `internal/native/client.go` - Added logFile capture and proper cleanup
-
-### Status
-**Ongoing** - Need to check runner.log on macOS host after next run to see crash details.
+- `internal/webhook/handler.go` - Defer cleanup to periodic task
+- `internal/native/client.go` - Handle existing files in extraction, add logging
 
 ---
 
