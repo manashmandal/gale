@@ -24,14 +24,17 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Debug echo test
+        run: |
+          echo "This is a debug message 1"
+          sleep 1
+          echo "This is a debug message 2"
+          sleep 1
+          echo "This is a debug message 3"
+
       - name: Run tests with coverage check
         run: |
-          echo "=== Starting tests ==="
-          pwd
-          ls -la
-          echo "=== Running go test ==="
-          go test -v -coverprofile=coverage.out ./internal/... 2>&1 || { echo "Tests failed with exit code $?"; exit 1; }
-          echo "=== Tests completed ==="
+          go test -v -coverprofile=coverage.out ./internal/...
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           if awk "BEGIN {exit !($COVERAGE < 65)}"; then
