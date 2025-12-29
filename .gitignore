@@ -30,3 +30,14 @@ config.local.yaml
 # GoReleaser
 dist/
 gale
+
+# Node.js / Bun (assets directory)
+node_modules/
+assets/node_modules/
+assets/frames/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn

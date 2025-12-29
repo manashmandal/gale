@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gale - JIT Autoscaler Animation</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #0d1117;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    .container {
+      width: 1080px;
+      height: 1080px;
+      position: relative;
+      background: linear-gradient(180deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
+      overflow: hidden;
+    }
+
+    /* Header */
+    .header {
+      position: absolute;
+      top: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      text-align: center;
+      z-index: 10;
+    }
+
+    .logo {
+      width: 60px;
+      height: 60px;
+      margin-bottom: 8px;
+    }
+
+    .title {
+      font-size: 42px;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: 3px;
+    }
+
+    .subtitle {
+      font-size: 16px;
+      color: #8b949e;
+      margin-top: 4px;
+    }
+
+    /* GitHub Source - Top */
+    .github-source {
+      position: absolute;
+      top: 180px;
+      left: 50%;
+      transform: translateX(-50%);
+      text-align: center;
+    }
+
+    .github-box {
+      background: linear-gradient(135deg, #21262d 0%, #30363d 100%);
+      border: 2px solid #30363d;
+      border-radius: 16px;
+      padding: 20px 40px;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+
+    .github-icon {
+      width: 50px;
+      height: 50px;
+      background: #ffffff;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .github-icon svg {
+      width: 32px;
+      height: 32px;
+    }
+
+    .github-text {
+      text-align: left;
+    }
+
+    .github-title {
+      color: #ffffff;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .github-sub {
+      color: #8b949e;
+      font-size: 13px;
+    }
+
+    /* Event Badge */
+    .event-badge {
+      position: absolute;
+      top: 268px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: linear-gradient(135deg, #1f6feb 0%, #388bfd 100%);
+      color: white;
+      padding: 6px 14px 6px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      opacity: 0;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 0 20px rgba(56, 139, 253, 0.4);
+    }
+
+    .event-badge.visible {
+      opacity: 1;
+    }
+
+    .event-badge.complete {
+      background: linear-gradient(135deg, #238636 0%, #2ea043 100%);
+      box-shadow: 0 0 20px rgba(35, 134, 54, 0.5);
+    }
+
+    .workflow-spinner {
+      width: 16px;
+      height: 16px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .workflow-spinner::before {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #ffffff;
+      border-radius: 50%;
+      animation: workflow-spin 1s linear infinite;
+    }
+
+    .workflow-spinner::after {
+      content: '';
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      background: #ffffff;
+      border-radius: 50%;
+    }
+
+    .event-badge.complete .workflow-spinner::before {
+      animation: none;
+      border: none;
+    }
+
+    .event-badge.complete .workflow-spinner::after {
+      width: 16px;
+      height: 16px;
+      background: transparent;
+      border-radius: 0;
+      clip-path: polygon(20% 45%, 40% 70%, 85% 20%, 95% 30%, 40% 90%, 10% 55%);
+      background: #ffffff;
+    }
+
+    @keyframes workflow-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Connection Lines */
+    .connection {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 3px;
+      background: #30363d;
+    }
+
+    .connection.active {
+      background: linear-gradient(180deg, #58a6ff, #a371f7);
+      box-shadow: 0 0 12px rgba(88, 166, 255, 0.6);
+    }
+
+    .connection-1 {
+      top: 295px;
+      height: 65px;
+    }
+
+    .connection-node-top {
+      position: absolute;
+      left: 50%;
+      top: 292px;
+      transform: translateX(-50%);
+      width: 10px;
+      height: 10px;
+      background: #30363d;
+      border-radius: 50%;
+      z-index: 5;
+    }
+
+    .connection-node-top.active {
+      background: #58a6ff;
+      box-shadow: 0 0 15px rgba(88, 166, 255, 0.8);
+    }
+
+    /* Gale Core */
+    .gale-core {
+      position: absolute;
+      top: 360px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 500px;
+      background: linear-gradient(135deg, #1a1f2e 0%, #21262d 100%);
+      border: 2px solid #58a6ff;
+      border-radius: 20px;
+      padding: 20px 25px;
+      box-shadow: 0 0 30px rgba(88, 166, 255, 0.15);
+    }
+
+    .gale-header {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+
+    .gale-logo {
+      width: 32px;
+      height: 32px;
+    }
+
+    .gale-title {
+      color: #58a6ff;
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .gale-components {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .component {
+      background: #0d1117;
+      border: 2px solid #30363d;
+      border-radius: 12px;
+      padding: 12px 16px;
+      text-align: center;
+      transition: all 0.4s ease;
+    }
+
+    .component.active {
+      border-color: #58a6ff;
+      box-shadow: 0 0 20px rgba(88, 166, 255, 0.4);
+      transform: scale(1.05);
+    }
+
+    .component-icon {
+      font-size: 24px;
+      margin-bottom: 5px;
+    }
+
+    .component-name {
+      color: #c9d1d9;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .arrow {
+      color: #484f58;
+      font-size: 18px;
+      transition: color 0.3s ease;
+    }
+
+    .arrow.active {
+      color: #58a6ff;
+    }
+
+    /* Split connection */
+    .connection-split {
+      position: absolute;
+      top: 519px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 400px;
+      height: 72px;
+    }
+
+    .split-line-center {
+      position: absolute;
+      left: 50%;
+      top: 0;
+      transform: translateX(-50%);
+      width: 3px;
+      height: 22px;
+      background: #30363d;
+    }
+
+    .split-line-center.active {
+      background: linear-gradient(180deg, #a371f7, #58a6ff);
+      box-shadow: 0 0 12px rgba(163, 113, 247, 0.6);
+    }
+
+    .split-node {
+      position: absolute;
+      left: 50%;
+      top: 18px;
+      transform: translate(-50%, -50%);
+      width: 10px;
+      height: 10px;
+      background: #30363d;
+      border-radius: 50%;
+      z-index: 5;
+    }
+
+    .split-node.active {
+      background: #a371f7;
+      box-shadow: 0 0 15px rgba(163, 113, 247, 0.8);
+    }
+
+    .split-line-left {
+      position: absolute;
+      left: calc(50% - 5px);
+      top: 16px;
+      width: 157px;
+      height: 3px;
+      background: #30363d;
+      transform-origin: right center;
+      transform: translateX(-100%);
+    }
+
+    .split-line-left.active {
+      background: linear-gradient(90deg, #f78166, #a371f7);
+      box-shadow: 0 0 12px rgba(247, 129, 102, 0.5);
+    }
+
+    .split-line-right {
+      position: absolute;
+      left: calc(50% + 5px);
+      top: 16px;
+      width: 157px;
+      height: 3px;
+      background: #30363d;
+    }
+
+    .split-line-right.active {
+      background: linear-gradient(90deg, #a371f7, #79c0ff);
+      box-shadow: 0 0 12px rgba(121, 192, 255, 0.5);
+    }
+
+    .split-node-left {
+      position: absolute;
+      left: calc(50% - 160px);
+      top: 18px;
+      transform: translate(-50%, -50%);
+      width: 10px;
+      height: 10px;
+      background: #30363d;
+      border-radius: 50%;
+      z-index: 5;
+    }
+
+    .split-node-left.active {
+      background: #f78166;
+      box-shadow: 0 0 15px rgba(247, 129, 102, 0.8);
+    }
+
+    .split-node-right {
+      position: absolute;
+      left: calc(50% + 160px);
+      top: 18px;
+      transform: translate(-50%, -50%);
+      width: 10px;
+      height: 10px;
+      background: #30363d;
+      border-radius: 50%;
+      z-index: 5;
+    }
+
+    .split-node-right.active {
+      background: #79c0ff;
+      box-shadow: 0 0 15px rgba(121, 192, 255, 0.8);
+    }
+
+    .split-line-down-left {
+      position: absolute;
+      left: calc(50% - 160px);
+      top: 20px;
+      width: 3px;
+      height: 52px;
+      background: #30363d;
+      transform: translateX(-50%);
+    }
+
+    .split-line-down-left.active {
+      background: linear-gradient(180deg, #f78166, #238636);
+      box-shadow: 0 0 12px rgba(247, 129, 102, 0.5);
+    }
+
+    .split-line-down-right {
+      position: absolute;
+      left: calc(50% + 160px);
+      top: 15px;
+      width: 3px;
+      height: 52px;
+      background: #30363d;
+      transform: translateX(-50%);
+    }
+
+    .split-line-down-right.active {
+      background: linear-gradient(180deg, #79c0ff, #238636);
+      box-shadow: 0 0 12px rgba(121, 192, 255, 0.5);
+    }
+
+    /* Runner Hosts */
+    .runner-hosts {
+      position: absolute;
+      top: 570px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 40px;
+    }
+
+    .runner-host {
+      width: 280px;
+      background: linear-gradient(135deg, #161b22 0%, #21262d 100%);
+      border: 2px dashed #30363d;
+      border-radius: 16px;
+      padding: 18px;
+      transition: all 0.4s ease;
+    }
+
+    .runner-host.active {
+      border-style: solid;
+      border-color: #238636;
+      box-shadow: 0 0 25px rgba(35, 134, 54, 0.3);
+    }
+
+    .host-header {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 15px;
+    }
+
+    .host-icon {
+      font-size: 24px;
+    }
+
+    .host-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .docker-host .host-title {
+      color: #79c0ff;
+    }
+
+    .native-host .host-title {
+      color: #f78166;
+    }
+
+    .host-badge {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+
+    .docker-host .host-badge {
+      background: rgba(121, 192, 255, 0.2);
+      color: #79c0ff;
+    }
+
+    .native-host .host-badge {
+      background: rgba(247, 129, 102, 0.2);
+      color: #f78166;
+    }
+
+    .runners {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .runner {
+      width: 75px;
+      background: #0d1117;
+      border: 2px solid #30363d;
+      border-radius: 10px;
+      padding: 12px 8px;
+      text-align: center;
+      opacity: 0.4;
+      transition: all 0.4s ease;
+    }
+
+    .runner.spawned {
+      opacity: 1;
+      border-color: #238636;
+      box-shadow: 0 0 15px rgba(35, 134, 54, 0.4);
+    }
+
+    .runner-icon {
+      font-size: 22px;
+      margin-bottom: 5px;
+    }
+
+    .runner-label {
+      color: #8b949e;
+      font-size: 9px;
+      font-weight: 600;
+    }
+
+    .runner.spawned .runner-label {
+      color: #238636;
+    }
+
+    /* Connection to GitHub Actions */
+    .merge-node-left {
+      position: absolute;
+      left: 380px;
+      top: 758px;
+      transform: translate(-50%, -50%);
+      width: 10px;
+      height: 10px;
+      background: #30363d;
+      border-radius: 50%;
+      z-index: 5;
+    }
+
+    .merge-node-left.active {
+      background: #238636;
+      box-shadow: 0 0 15px rgba(35, 134, 54, 0.8);
+    }
+
+    .merge-node-right {
+      position: absolute;
+      left: 700px;
+      top: 758px;
+      transform: translate(-50%, -50%);
+      width: 10px;
+      height: 10px;
+      background: #30363d;
+      border-radius: 50%;
+      z-index: 5;
+    }
+
+    .merge-node-right.active {
+      background: #238636;
+      box-shadow: 0 0 15px rgba(35, 134, 54, 0.8);
+    }
+
+    .merge-node-center {
+      position: absolute;
+      left: 540px;
+      top: 758px;
+      transform: translate(-50%, -50%);
+      width: 12px;
+      height: 12px;
+      background: #30363d;
+      border-radius: 50%;
+      z-index: 5;
+    }
+
+    .merge-node-center.active {
+      background: #2ea043;
+      box-shadow: 0 0 18px rgba(46, 160, 67, 0.9);
+    }
+
+    .merge-line-up-left {
+      position: absolute;
+      left: 380px;
+      top: 720px;
+      width: 3px;
+      height: 35px;
+      background: #30363d;
+      transform: translateX(-50%);
+    }
+
+    .merge-line-up-left.active {
+      background: linear-gradient(180deg, #238636, #2ea043);
+      box-shadow: 0 0 12px rgba(35, 134, 54, 0.5);
+    }
+
+    .merge-line-up-right {
+      position: absolute;
+      left: 700px;
+      top: 720px;
+      width: 3px;
+      height: 35px;
+      background: #30363d;
+      transform: translateX(-50%);
+    }
+
+    .merge-line-up-right.active {
+      background: linear-gradient(180deg, #238636, #2ea043);
+      box-shadow: 0 0 12px rgba(35, 134, 54, 0.5);
+    }
+
+    .merge-line-left {
+      position: absolute;
+      left: 380px;
+      top: 757px;
+      width: 162px;
+      height: 3px;
+      background: #30363d;
+      transform: translateX(-2px);
+    }
+
+    .merge-line-left.active {
+      background: linear-gradient(90deg, #238636, #2ea043);
+      box-shadow: 0 0 12px rgba(35, 134, 54, 0.5);
+    }
+
+    .merge-line-right {
+      position: absolute;
+      left: 538px;
+      top: 757px;
+      width: 162px;
+      height: 3px;
+      background: #30363d;
+    }
+
+    .merge-line-right.active {
+      background: linear-gradient(90deg, #2ea043, #238636);
+      box-shadow: 0 0 12px rgba(35, 134, 54, 0.5);
+    }
+
+    .merge-line-down {
+      position: absolute;
+      left: 540px;
+      top: 760px;
+      width: 3px;
+      height: 110px;
+      background: #30363d;
+      transform: translateX(-50%);
+    }
+
+    .merge-line-down.active {
+      background: linear-gradient(180deg, #2ea043, #238636);
+      box-shadow: 0 0 12px rgba(35, 134, 54, 0.5);
+    }
+
+    /* GitHub Actions */
+    .github-actions {
+      position: absolute;
+      top: 870px;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    .actions-box {
+      background: linear-gradient(135deg, #21262d 0%, #30363d 100%);
+      border: 2px solid #30363d;
+      border-radius: 16px;
+      padding: 15px 30px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: all 0.4s ease;
+    }
+
+    .actions-box.complete {
+      border-color: #238636;
+      box-shadow: 0 0 25px rgba(35, 134, 54, 0.4);
+    }
+
+    .actions-icon {
+      width: 45px;
+      height: 45px;
+      background: linear-gradient(135deg, #238636, #2ea043);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .actions-icon svg {
+      width: 28px;
+      height: 28px;
+      fill: white;
+    }
+
+    .actions-text {
+      text-align: left;
+    }
+
+    .actions-title {
+      color: #ffffff;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .actions-status {
+      color: #8b949e;
+      font-size: 12px;
+      transition: color 0.3s ease;
+    }
+
+    .actions-status.complete {
+      color: #238636;
+    }
+
+    /* Flow particles */
+    .particle {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: #58a6ff;
+      border-radius: 50%;
+      opacity: 0;
+      box-shadow: 0 0 10px currentColor;
+    }
+
+    .particle.moving {
+      opacity: 1;
+    }
+
+    /* Step indicator */
+    .step-indicator {
+      position: absolute;
+      bottom: 25px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+    }
+
+    .step-dot {
+      width: 8px;
+      height: 8px;
+      background: #30363d;
+      border-radius: 50%;
+      transition: all 0.3s ease;
+    }
+
+    .step-dot.active {
+      background: #58a6ff;
+      box-shadow: 0 0 10px rgba(88, 166, 255, 0.6);
+    }
+
+    .step-dot.complete {
+      background: #238636;
+      box-shadow: 0 0 10px rgba(35, 134, 54, 0.6);
+    }
+
+    /* Keyframes */
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+    }
+
+    @keyframes glow {
+      0%, 100% { box-shadow: 0 0 15px currentColor; }
+      50% { box-shadow: 0 0 25px currentColor; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <img src="logo.png" alt="Gale" class="logo" onerror="this.style.display='none'">
+      <div class="title">GALE</div>
+      <div class="subtitle">Just-In-Time Autoscaler for <b><i>Self Hosted</i></b> GitHub Actions in Private Repos</div>
+    </div>
+
+    <!-- GitHub Source -->
+    <div class="github-source">
+      <div class="github-box">
+        <div class="github-icon">
+          <svg viewBox="0 0 24 24" fill="#0d1117">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+        </div>
+        <div class="github-text">
+          <div class="github-title">GitHub</div>
+          <div class="github-sub">Webhook / Polling API</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Event Badge -->
+    <div class="event-badge" id="event-badge">
+      <div class="workflow-spinner"></div>
+      <span>workflow_job.queued</span>
+    </div>
+
+    <!-- Connection 1: GitHub to Gale -->
+    <div class="connection-node-top" id="conn-node-top"></div>
+    <div class="connection connection-1" id="conn-1"></div>
+
+    <!-- Gale Core -->
+    <div class="gale-core">
+      <div class="gale-header">
+        <img src="logo.png" alt="" class="gale-logo" onerror="this.style.display='none'">
+        <div class="gale-title">Gale</div>
+      </div>
+      <div class="gale-components">
+        <div class="component" id="comp-gh">
+          <div class="component-icon">📡</div>
+          <div class="component-name">GitHub Client</div>
+        </div>
+        <div class="arrow" id="arrow-1">→</div>
+        <div class="component" id="comp-scaler">
+          <div class="component-icon">⚡</div>
+          <div class="component-name">Scaler</div>
+        </div>
+        <div class="arrow" id="arrow-2">→</div>
+        <div class="component" id="comp-runner">
+          <div class="component-icon">🚀</div>
+          <div class="component-name">Runner Manager</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Split Connection -->
+    <div class="connection-split">
+      <div class="split-line-center" id="split-center"></div>
+      <div class="split-node" id="split-node"></div>
+      <div class="split-line-left" id="split-left"></div>
+      <div class="split-line-right" id="split-right"></div>
+      <div class="split-node-left" id="split-node-left"></div>
+      <div class="split-node-right" id="split-node-right"></div>
+      <div class="split-line-down-left" id="split-down-left"></div>
+      <div class="split-line-down-right" id="split-down-right"></div>
+    </div>
+
+    <!-- Runner Hosts -->
+    <div class="runner-hosts">
+      <!-- Native macOS -->
+      <div class="runner-host native-host" id="native-host">
+        <div class="host-header">
+          <span class="host-icon">🍎</span>
+          <span class="host-title">Native macOS</span>
+          <span class="host-badge">Xcode Ready</span>
+        </div>
+        <div class="runners">
+          <div class="runner" id="native-runner-1">
+            <div class="runner-icon">🖥️</div>
+            <div class="runner-label">Runner 1</div>
+          </div>
+          <div class="runner" id="native-runner-2">
+            <div class="runner-icon">🖥️</div>
+            <div class="runner-label">Runner 2</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Docker Linux -->
+      <div class="runner-host docker-host" id="docker-host">
+        <div class="host-header">
+          <span class="host-icon">🐳</span>
+          <span class="host-title">Docker Linux</span>
+          <span class="host-badge">Containers</span>
+        </div>
+        <div class="runners">
+          <div class="runner" id="docker-runner-1">
+            <div class="runner-icon">📦</div>
+            <div class="runner-label">Runner 1</div>
+          </div>
+          <div class="runner" id="docker-runner-2">
+            <div class="runner-icon">📦</div>
+            <div class="runner-label">Runner 2</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Merge Connection Lines (absolute positioned) -->
+    <div class="merge-line-up-left" id="merge-up-left"></div>
+    <div class="merge-line-up-right" id="merge-up-right"></div>
+    <div class="merge-node-left" id="merge-node-left"></div>
+    <div class="merge-node-right" id="merge-node-right"></div>
+    <div class="merge-line-left" id="merge-left"></div>
+    <div class="merge-line-right" id="merge-right"></div>
+    <div class="merge-node-center" id="merge-node-center"></div>
+    <div class="merge-line-down" id="merge-down"></div>
+
+    <!-- GitHub Actions -->
+    <div class="github-actions">
+      <div class="actions-box" id="actions-box">
+        <div class="actions-icon">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+          </svg>
+        </div>
+        <div class="actions-text">
+          <div class="actions-title">GitHub Actions</div>
+          <div class="actions-status" id="actions-status">Waiting for runners...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step Indicator -->
+    <div class="step-indicator">
+      <div class="step-dot" id="step-1"></div>
+      <div class="step-dot" id="step-2"></div>
+      <div class="step-dot" id="step-3"></div>
+      <div class="step-dot" id="step-4"></div>
+      <div class="step-dot" id="step-5"></div>
+      <div class="step-dot" id="step-6"></div>
+    </div>
+  </div>
+
+  <script>
+    function activate(id) {
+      document.getElementById(id).classList.add('active');
+    }
+
+    function complete(id) {
+      const el = document.getElementById(id);
+      el.classList.remove('active');
+      el.classList.add('complete');
+    }
+
+    function spawn(id) {
+      document.getElementById(id).classList.add('spawned');
+    }
+
+    function activateHost(id) {
+      document.getElementById(id).classList.add('active');
+    }
+
+    function stepActive(n) {
+      document.getElementById(`step-${n}`).classList.add('active');
+    }
+
+    function stepComplete(n) {
+      const el = document.getElementById(`step-${n}`);
+      el.classList.remove('active');
+      el.classList.add('complete');
+    }
+
+    function reset() {
+      document.querySelectorAll('.active, .complete, .spawned, .visible').forEach(el => {
+        el.classList.remove('active', 'complete', 'spawned', 'visible');
+      });
+      document.getElementById('actions-status').textContent = 'Waiting for runners...';
+      document.getElementById('actions-status').classList.remove('complete');
+      document.getElementById('actions-box').classList.remove('complete');
+      const badge = document.getElementById('event-badge');
+      badge.classList.remove('complete');
+      badge.querySelector('span').textContent = 'workflow_job.queued';
+    }
+
+    const timeline = [
+      // Step 1: Event received
+      { time: 500, action: () => {
+        stepActive(1);
+        document.getElementById('event-badge').classList.add('visible');
+      }},
+
+      // Step 2: Flow to Gale
+      { time: 1200, action: () => {
+        stepComplete(1);
+        stepActive(2);
+        activate('conn-node-top');
+        activate('conn-1');
+      }},
+
+      // Gale processes: GitHub Client
+      { time: 1600, action: () => {
+        activate('comp-gh');
+      }},
+
+      { time: 2000, action: () => {
+        activate('arrow-1');
+        activate('comp-scaler');
+      }},
+
+      { time: 2400, action: () => {
+        activate('arrow-2');
+        activate('comp-runner');
+      }},
+
+      // Step 3: Split to hosts
+      { time: 2800, action: () => {
+        stepComplete(2);
+        stepActive(3);
+        activate('split-center');
+        activate('split-node');
+      }},
+
+      { time: 3000, action: () => {
+        activate('split-left');
+        activate('split-right');
+        activate('split-node-left');
+        activate('split-node-right');
+      }},
+
+      { time: 3200, action: () => {
+        activate('split-down-left');
+        activate('split-down-right');
+      }},
+
+      // Step 4: Spawn runners
+      { time: 3500, action: () => {
+        stepComplete(3);
+        stepActive(4);
+        activateHost('native-host');
+        activateHost('docker-host');
+      }},
+
+      { time: 3800, action: () => {
+        spawn('native-runner-1');
+        spawn('docker-runner-1');
+      }},
+
+      { time: 4200, action: () => {
+        spawn('native-runner-2');
+        spawn('docker-runner-2');
+      }},
+
+      // Step 5: Connect to GitHub Actions
+      { time: 4800, action: () => {
+        stepComplete(4);
+        stepActive(5);
+        activate('merge-up-left');
+        activate('merge-up-right');
+      }},
+
+      { time: 5000, action: () => {
+        activate('merge-node-left');
+        activate('merge-node-right');
+        activate('merge-left');
+        activate('merge-right');
+      }},
+
+      { time: 5200, action: () => {
+        activate('merge-node-center');
+        activate('merge-down');
+      }},
+
+      // Step 6: Jobs complete
+      { time: 5600, action: () => {
+        stepComplete(5);
+        stepActive(6);
+        document.getElementById('actions-box').classList.add('complete');
+        document.getElementById('actions-status').textContent = '✓ Jobs Completed';
+        document.getElementById('actions-status').classList.add('complete');
+        const badge = document.getElementById('event-badge');
+        badge.classList.add('complete');
+        badge.querySelector('span').textContent = 'workflow_job.completed';
+      }},
+
+      // Hold for a moment then reset
+      { time: 8000, action: () => {
+        stepComplete(6);
+      }},
+
+      { time: 9500, action: () => {
+        reset();
+        runAnimation();
+      }}
+    ];
+
+    let timeoutIds = [];
+
+    function runAnimation() {
+      timeoutIds.forEach(id => clearTimeout(id));
+      timeoutIds = [];
+      
+      timeline.forEach(({ time, action }) => {
+        const id = setTimeout(action, time);
+        timeoutIds.push(id);
+      });
+    }
+
+    window.onload = () => {
+      setTimeout(runAnimation, 500);
+    };
+  </script>
+</body>
+</html>
