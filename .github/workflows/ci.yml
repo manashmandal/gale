@@ -43,7 +43,6 @@ jobs:
   lint:
     runs-on: gale
     timeout-minutes: 5
-    needs: test
     steps:
       - name: Clone repository
         run: |
@@ -71,7 +70,6 @@ jobs:
   build:
     runs-on: gale
     timeout-minutes: 5
-    needs: lint
     steps:
       - name: Clone repository
         run: |
