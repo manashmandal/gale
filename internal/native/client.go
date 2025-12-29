@@ -256,8 +256,21 @@ func (c *Client) waitForCompletion(runner *Runner) {
 	}
 
 	exitTime := time.Now()
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG] waitForCompletion: runner %s exited at %v (code=%d, err=%v)\n",
-		runner.ID, exitTime, exitCode, exitErr)
+
+	// Check if process was signaled
+	signaled := false
+	var signal syscall.Signal
+	if runner.cmd != nil && runner.cmd.ProcessState != nil {
+		if ws, ok := runner.cmd.ProcessState.Sys().(syscall.WaitStatus); ok {
+			signaled = ws.Signaled()
+			if signaled {
+				signal = ws.Signal()
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] waitForCompletion: runner %s exited at %v (code=%d, err=%v, signaled=%v, signal=%v)\n",
+		runner.ID, exitTime, exitCode, exitErr, signaled, signal)
 
 	// Log exit information to the runner's log file before closing
 	if runner.logFile != nil {
@@ -267,6 +280,33 @@ func (c *Client) waitForCompletion(runner *Runner) {
 			fmt.Fprintf(runner.logFile, "\n[GALE] Runner exited normally (exit code: %d)\n", exitCode)
 		}
 		runner.logFile.Close()
+		runner.logFile = nil
+	}
+
+	// Dump runner log to stderr for debugging
+	logPath := filepath.Join(runner.Dir, "runner.log")
+	if logContent, err := os.ReadFile(logPath); err == nil {
+		lines := strings.Split(string(logContent), "\n")
+		// Show last 30 lines
+		start := 0
+		if len(lines) > 30 {
+			start = len(lines) - 30
+		}
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] === Runner %s log (last 30 lines) ===\n", runner.ID)
+		for _, line := range lines[start:] {
+			fmt.Fprintf(os.Stderr, "%s\n", line)
+		}
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] === End runner log ===\n")
+	}
+
+	// Check for any orphaned Runner.Worker processes
+	workerPath := filepath.Join(runner.Dir, "bin", "Runner.Worker")
+	if _, err := os.Stat(workerPath); err == nil {
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] Checking for orphaned Runner.Worker processes...\n")
+		cmd := exec.Command("pgrep", "-f", runner.Dir)
+		if output, err := cmd.Output(); err == nil && len(output) > 0 {
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] Found processes still running in runner dir: %s\n", strings.TrimSpace(string(output)))
+		}
 	}
 
 	c.mu.Lock()
