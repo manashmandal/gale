@@ -77,7 +77,8 @@ jobs:
 
       - name: Update Homebrew Formula
         env:
-          GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GALE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           # Get version (strip 'v' prefix for formula version)
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
@@ -89,10 +90,11 @@ jobs:
 
           # Wait for release assets to be available (retry up to 30 seconds)
           echo "Waiting for release assets..."
+          ASSET_ID=""
           for i in {1..6}; do
-            ASSET_ID=$(curl -sL "https://api.github.com/repos/manashmandal/gale/releases/tags/${TAG}" \
-              -H "Authorization: token $GITHUB_TOKEN" | \
-              jq -r '.assets[] | select(.name == "checksums.txt") | .id // empty')
+            RESPONSE=$(curl -sL "https://api.github.com/repos/manashmandal/gale/releases/tags/${TAG}" \
+              -H "Authorization: token $GALE_TOKEN")
+            ASSET_ID=$(echo "$RESPONSE" | jq -r '.assets[]? | select(.name == "checksums.txt") | .id // empty' 2>/dev/null || echo "")
             if [ -n "$ASSET_ID" ]; then
               echo "Found checksums.txt asset (ID: $ASSET_ID)"
               break
@@ -103,12 +105,14 @@ jobs:
 
           if [ -z "$ASSET_ID" ]; then
             echo "Error: checksums.txt asset not found after 30 seconds"
+            echo "Last API response:"
+            echo "$RESPONSE" | head -20
             exit 1
           fi
 
           # Download checksums
           curl -sL "https://api.github.com/repos/manashmandal/gale/releases/assets/${ASSET_ID}" \
-            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Authorization: token $GALE_TOKEN" \
             -H "Accept: application/octet-stream" > checksums.txt
 
           echo "Downloaded checksums.txt:"
@@ -190,12 +194,12 @@ jobs:
 
           # Get current SHA and update Formula
           CURRENT_SHA=$(curl -sL "https://api.github.com/repos/manashmandal/homebrew-tap/contents/Formula/gale.rb" \
-            -H "Authorization: token $GITHUB_TOKEN" | jq -r '.sha')
+            -H "Authorization: token $HOMEBREW_TAP_TOKEN" | jq -r '.sha')
 
           # base64 encode (macOS compatible - no -w0 option)
           CONTENT=$(base64 < /tmp/gale_final.rb | tr -d '\n')
 
           curl -sL -X PUT "https://api.github.com/repos/manashmandal/homebrew-tap/contents/Formula/gale.rb" \
-            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Authorization: token $HOMEBREW_TAP_TOKEN" \
             -H "Content-Type: application/json" \
             -d "{\"message\": \"feat: update gale to ${TAG}\", \"content\": \"${CONTENT}\", \"sha\": \"${CURRENT_SHA}\"}"
