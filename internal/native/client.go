@@ -506,10 +506,20 @@ func getProcessesViaLsof(dir string) []string {
 	return pids
 }
 
-// hasRecentTempScripts checks if there are recently modified temp scripts in the runner directory.
-// GitHub Actions creates .sh files in _work/_temp/ for each step. Recent files indicate active steps.
+// hasRecentTempScripts checks if there are temp scripts being executed in the runner directory.
+// GitHub Actions creates .sh files in _work/_temp/ for each step.
 func hasRecentTempScripts(runnerDir string) bool {
 	tempDir := filepath.Join(runnerDir, "_work", "_temp")
+
+	// Method 1: Check if any bash process is running a script from this temp dir
+	// This is the most reliable way to detect running steps
+	cmd := exec.Command("sh", "-c",
+		fmt.Sprintf("pgrep -f '%s.*\\.sh' 2>/dev/null", tempDir))
+	if output, err := cmd.Output(); err == nil && len(strings.TrimSpace(string(output))) > 0 {
+		return true
+	}
+
+	// Method 2: Check for recently created/modified scripts (fallback)
 	entries, err := os.ReadDir(tempDir)
 	if err != nil {
 		return false
@@ -521,8 +531,8 @@ func hasRecentTempScripts(runnerDir string) bool {
 			if err != nil {
 				continue
 			}
-			// If script was modified in last 30 seconds, step is likely still running
-			if time.Since(info.ModTime()) < 30*time.Second {
+			// If script was created/modified in last 2 minutes, step might still be running
+			if time.Since(info.ModTime()) < 2*time.Minute {
 				return true
 			}
 		}
