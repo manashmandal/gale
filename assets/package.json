@@ -1,0 +1,10 @@
+{
+  "name": "gale-animation",
+  "version": "1.0.0",
+  "scripts": {
+    "capture": "bun run capture-gif.ts"
+  },
+  "dependencies": {
+    "puppeteer": "^23.0.0"
+  }
+}
