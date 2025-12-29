@@ -255,7 +255,7 @@ func (c *Client) waitForCompletion(runner *Runner) {
 		}
 	}
 
-	exitTime := time.Now()
+	listenerExitTime := time.Now()
 
 	// Check if process was signaled
 	signaled := false
@@ -269,52 +269,77 @@ func (c *Client) waitForCompletion(runner *Runner) {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "[GALE DEBUG] waitForCompletion: runner %s exited at %v (code=%d, err=%v, signaled=%v, signal=%v)\n",
-		runner.ID, exitTime, exitCode, exitErr, signaled, signal)
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Runner.Listener %s exited at %v (code=%d, err=%v, signaled=%v, signal=%v)\n",
+		runner.ID, listenerExitTime, exitCode, exitErr, signaled, signal)
 
 	// Log exit information to the runner's log file before closing
 	if runner.logFile != nil {
 		if exitErr != nil {
-			fmt.Fprintf(runner.logFile, "\n[GALE] Runner exited with error: %v (exit code: %d)\n", exitErr, exitCode)
+			fmt.Fprintf(runner.logFile, "\n[GALE] Runner.Listener exited with error: %v (exit code: %d)\n", exitErr, exitCode)
 		} else {
-			fmt.Fprintf(runner.logFile, "\n[GALE] Runner exited normally (exit code: %d)\n", exitCode)
+			fmt.Fprintf(runner.logFile, "\n[GALE] Runner.Listener exited normally (exit code: %d)\n", exitCode)
 		}
 		runner.logFile.Close()
 		runner.logFile = nil
 	}
 
-	// Dump runner log to stderr for debugging
-	logPath := filepath.Join(runner.Dir, "runner.log")
-	if logContent, err := os.ReadFile(logPath); err == nil {
-		lines := strings.Split(string(logContent), "\n")
-		// Show last 30 lines
-		start := 0
-		if len(lines) > 30 {
-			start = len(lines) - 30
-		}
-		fmt.Fprintf(os.Stderr, "[GALE DEBUG] === Runner %s log (last 30 lines) ===\n", runner.ID)
-		for _, line := range lines[start:] {
-			fmt.Fprintf(os.Stderr, "%s\n", line)
-		}
-		fmt.Fprintf(os.Stderr, "[GALE DEBUG] === End runner log ===\n")
-	}
+	// Wait for all child processes (Runner.Worker, Post steps, etc.) to complete
+	// This is critical because Runner.Listener may exit before Post steps finish
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] Waiting for child processes in %s to complete...\n", runner.Dir)
+	c.waitForAllProcesses(runner, 5*time.Minute)
 
-	// Check for any orphaned Runner.Worker processes
-	workerPath := filepath.Join(runner.Dir, "bin", "Runner.Worker")
-	if _, err := os.Stat(workerPath); err == nil {
-		fmt.Fprintf(os.Stderr, "[GALE DEBUG] Checking for orphaned Runner.Worker processes...\n")
-		cmd := exec.Command("pgrep", "-f", runner.Dir)
-		if output, err := cmd.Output(); err == nil && len(output) > 0 {
-			fmt.Fprintf(os.Stderr, "[GALE DEBUG] Found processes still running in runner dir: %s\n", strings.TrimSpace(string(output)))
-		}
-	}
+	actualExitTime := time.Now()
+	fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes in %s completed at %v (waited %v)\n",
+		runner.Dir, actualExitTime, actualExitTime.Sub(listenerExitTime))
 
 	c.mu.Lock()
 	if r, exists := c.runners[runner.ID]; exists {
 		r.Status = "exited"
-		r.ExitedAt = exitTime
+		r.ExitedAt = actualExitTime // Use time when ALL processes exited
 	}
 	c.mu.Unlock()
+}
+
+// waitForAllProcesses waits for all processes running in the runner directory to exit
+func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
+	deadline := time.Now().Add(maxWait)
+	checkInterval := 2 * time.Second
+
+	for time.Now().Before(deadline) {
+		pids := c.getProcessesInDir(runner.Dir)
+		if len(pids) == 0 {
+			return
+		}
+
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] Still waiting for %d processes in %s: %v\n",
+			len(pids), runner.Dir, pids)
+		time.Sleep(checkInterval)
+	}
+
+	// Timeout - log warning but continue
+	pids := c.getProcessesInDir(runner.Dir)
+	if len(pids) > 0 {
+		fmt.Fprintf(os.Stderr, "[GALE WARN] Timeout waiting for processes in %s, still running: %v\n",
+			runner.Dir, pids)
+	}
+}
+
+// getProcessesInDir returns PIDs of processes with the directory in their command line
+func (c *Client) getProcessesInDir(dir string) []string {
+	cmd := exec.Command("pgrep", "-f", dir)
+	output, err := cmd.Output()
+	if err != nil || len(output) == 0 {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var pids []string
+	for _, line := range lines {
+		if line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
 }
 
 func (c *Client) ListRunners(ctx context.Context) ([]Runner, error) {
@@ -361,8 +386,16 @@ func (c *Client) RemoveRunner(ctx context.Context, runnerID string) error {
 		runner.logFile.Close()
 	}
 
-	// Log removal with stack trace hint
 	fmt.Fprintf(os.Stderr, "[GALE DEBUG] RemoveRunner called for %s, dir=%s\n", runnerID, runner.Dir)
+
+	// Kill any remaining processes in the runner directory before removing
+	pids := c.getProcessesInDir(runner.Dir)
+	if len(pids) > 0 {
+		fmt.Fprintf(os.Stderr, "[GALE DEBUG] Killing remaining processes before removal: %v\n", pids)
+		killCmd := exec.Command("pkill", "-9", "-f", runner.Dir)
+		_ = killCmd.Run()
+		time.Sleep(500 * time.Millisecond)
+	}
 
 	return os.RemoveAll(runner.Dir)
 }
