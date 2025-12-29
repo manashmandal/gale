@@ -142,8 +142,46 @@ debug-cleanup:
 	@echo "=== Runner PIDs (from pgrep) ==="
 	@pgrep -fl "Runner\." 2>/dev/null || echo "No Runner processes"
 
-## debug-all: Run all debug commands
-debug-all: debug-logs debug-runner-status debug-runner-logs debug-processes
+## debug-all: Run all debug commands and export to file
+debug-all:
+	@echo "Collecting debug information..."
+	@mkdir -p .debug
+	@( \
+		echo "=== GALE DEBUG REPORT ==="; \
+		echo "Generated: $$(date -u '+%Y-%m-%d %H:%M:%S UTC')"; \
+		echo "Host: $$(uname -a)"; \
+		echo ""; \
+		echo "=== Gale Version ==="; \
+		gale --version 2>&1 || echo "gale not found"; \
+		echo ""; \
+		echo "=== Gale Logs (last 100 lines) ==="; \
+		gale logs 2>&1 | tail -100 || echo "No logs found"; \
+		echo ""; \
+		echo "=== Runner Status Debug ==="; \
+		gale logs 2>&1 | grep -E "(DEBUG|exited|signal|graceful|WARN|ERROR|completed)" | tail -50 || echo "No debug info"; \
+		echo ""; \
+		echo "=== Native Runner Logs ==="; \
+		for log in ~/.gale/native-runners/work/*/runner.log; do \
+			if [ -f "$$log" ]; then \
+				echo "--- $$log ---"; \
+				tail -100 "$$log"; \
+				echo ""; \
+			fi \
+		done 2>/dev/null || echo "No runner logs"; \
+		echo ""; \
+		echo "=== Running Processes ==="; \
+		ps aux | grep -E "(gale|Runner\.(Listener|Worker))" | grep -v grep || echo "No processes"; \
+		echo ""; \
+		echo "=== Runner Work Directories ==="; \
+		ls -la ~/.gale/native-runners/work/ 2>/dev/null || echo "No work directories"; \
+		echo ""; \
+		echo "=== Runner Cache ==="; \
+		ls -la ~/.gale/native-runners/cache/ 2>/dev/null || echo "No cache"; \
+		echo ""; \
+		echo "=== END DEBUG REPORT ==="; \
+	) > .debug/gale-debug-$$(date +%Y%m%d-%H%M%S).txt
+	@echo "Debug report saved to: $$(ls -t .debug/gale-debug-*.txt | head -1)"
+	@echo "Share this file for troubleshooting."
 
 ## help: Show this help message
 help:

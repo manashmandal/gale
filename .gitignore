@@ -31,3 +31,4 @@ config.local.yaml
 dist/
 gale
 assets/node_modules/
+.debug/
