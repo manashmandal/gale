@@ -12,8 +12,11 @@ jobs:
     runs-on: gale
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Clone repository
+        run: |
+          rm -rf $GITHUB_WORKSPACE/*
+          git clone --depth 1 https://github.com/$GITHUB_REPOSITORY.git .
+          git checkout $GITHUB_SHA
 
       - name: Verify Go installation
         run: go version
