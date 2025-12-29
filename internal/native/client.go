@@ -140,49 +140,43 @@ func (c *Client) EnsureRunnerBinary(ctx context.Context) (string, error) {
 }
 
 func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, error) {
-	// Acquire creation lock to prevent race conditions when multiple runners start
-	// simultaneously. The GitHub Actions runner binary has internal state that can
-	// conflict when multiple instances initialize at the exact same time.
-	c.mu.Lock()
-
-	runnerBinaryDir, err := c.EnsureRunnerBinary(ctx)
-	if err != nil {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("ensuring runner binary: %w", err)
-	}
-
-	// Get runner registration token from GitHub API
-	registrationToken, err := getRegistrationToken(ctx, cfg.Token, cfg.RepoURL, cfg.OrgName, cfg.Scope)
-	if err != nil {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("getting registration token: %w", err)
-	}
-
+	// Generate unique runner ID first - this ensures complete isolation
 	runnerID := uuid.New().String()[:8]
 	runnerName := cfg.RunnerName
 	if runnerName == "" {
 		runnerName = fmt.Sprintf("gale-native-%s", runnerID)
 	}
 
+	// Each runner gets its own isolated directory - no shared state
 	runnerDir := filepath.Join(c.baseDir, "work", runnerID)
+
+	runnerBinaryDir, err := c.EnsureRunnerBinary(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ensuring runner binary: %w", err)
+	}
+
+	// Get runner registration token from GitHub API
+	registrationToken, err := getRegistrationToken(ctx, cfg.Token, cfg.RepoURL, cfg.OrgName, cfg.Scope)
+	if err != nil {
+		return nil, fmt.Errorf("getting registration token: %w", err)
+	}
+
 	if err := os.MkdirAll(runnerDir, 0755); err != nil {
-		c.mu.Unlock()
 		return nil, fmt.Errorf("creating runner dir: %w", err)
 	}
 
+	// Copy runner binary to this runner's isolated directory
 	if err := copyDir(runnerBinaryDir, runnerDir); err != nil {
 		os.RemoveAll(runnerDir)
-		c.mu.Unlock()
 		return nil, fmt.Errorf("copying runner files: %w", err)
 	}
 
-	// Pre-create the _work directory structure that the runner will use.
-	// This helps prevent race conditions with file_commands initialization.
+	// Pre-create the _work directory structure for this runner instance.
+	// Each runner has its own _work/_temp directory, completely isolated.
 	workDir := filepath.Join(runnerDir, "_work")
 	tempDir := filepath.Join(workDir, "_temp")
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		os.RemoveAll(runnerDir)
-		c.mu.Unlock()
 		return nil, fmt.Errorf("creating work temp dir: %w", err)
 	}
 
@@ -212,7 +206,6 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 
 	if output, err := configCmd.CombinedOutput(); err != nil {
 		os.RemoveAll(runnerDir)
-		c.mu.Unlock()
 		return nil, fmt.Errorf("configuring runner: %w\nOutput: %s", err, string(output))
 	}
 
@@ -241,7 +234,6 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 			logFile.Close()
 		}
 		os.RemoveAll(runnerDir)
-		c.mu.Unlock()
 		return nil, fmt.Errorf("starting runner: %w", err)
 	}
 
@@ -256,14 +248,10 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		logFile:   logFile,
 	}
 
-	// Register the runner while still holding the lock
+	// Only lock for map registration - runner creation is fully parallel
+	c.mu.Lock()
 	c.runners[runnerID] = runner
-
-	// Release lock and add small delay before returning to allow the runner
-	// to fully initialize. This helps prevent race conditions when multiple
-	// runners start in quick succession.
 	c.mu.Unlock()
-	time.Sleep(500 * time.Millisecond)
 
 	go c.waitForCompletion(runner)
 
