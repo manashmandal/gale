@@ -25,16 +25,17 @@ jobs:
         run: go mod download
 
       - name: Run tests with coverage check
+        id: test
         shell: bash
         run: |
           echo "Starting go test..."
-          set -o pipefail
-          go test -v -coverprofile=coverage.out ./internal/... 2>&1 | tee test-output.txt
+          go test -v -coverprofile=coverage.out ./internal/... > test-output.txt 2>&1
           RESULT=$?
           echo "Go test completed with exit code: $RESULT"
+          echo "test_result=$RESULT" >> $GITHUB_OUTPUT
+          cat test-output.txt
           if [ $RESULT -ne 0 ]; then
             echo "Tests failed"
-            cat test-output.txt
             exit 1
           fi
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
@@ -43,6 +44,13 @@ jobs:
             echo "Coverage ${COVERAGE}% is below minimum 65%"
             exit 1
           fi
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.txt
 
   lint:
     runs-on: gale
