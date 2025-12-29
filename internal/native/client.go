@@ -44,6 +44,7 @@ type Runner struct {
 	Repo      string
 	StartedAt time.Time
 	cmd       *exec.Cmd
+	logFile   *os.File
 }
 
 type RunnerConfig struct {
@@ -88,6 +89,9 @@ func (c *Client) Close() error {
 	for _, r := range c.runners {
 		if r.cmd != nil && r.cmd.Process != nil {
 			_ = r.cmd.Process.Signal(syscall.SIGTERM)
+		}
+		if r.logFile != nil {
+			r.logFile.Close()
 		}
 	}
 	return nil
@@ -197,12 +201,22 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		runCmd.Env = append(runCmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
+	// Capture runner output to log file for debugging
+	logFile, err := os.OpenFile(filepath.Join(runnerDir, "runner.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		runCmd.Stdout = logFile
+		runCmd.Stderr = logFile
+	}
+
 	// Run in its own process group to prevent signal interference from parent
 	runCmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
 
 	if err := runCmd.Start(); err != nil {
+		if logFile != nil {
+			logFile.Close()
+		}
 		os.RemoveAll(runnerDir)
 		return nil, fmt.Errorf("starting runner: %w", err)
 	}
@@ -215,6 +229,7 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 		Repo:      cfg.RepoURL,
 		StartedAt: time.Now(),
 		cmd:       runCmd,
+		logFile:   logFile,
 	}
 
 	c.mu.Lock()
@@ -229,6 +244,10 @@ func (c *Client) CreateRunner(ctx context.Context, cfg RunnerConfig) (*Runner, e
 func (c *Client) waitForCompletion(runner *Runner) {
 	if runner.cmd != nil {
 		_ = runner.cmd.Wait()
+	}
+
+	if runner.logFile != nil {
+		runner.logFile.Close()
 	}
 
 	c.mu.Lock()
@@ -276,6 +295,10 @@ func (c *Client) RemoveRunner(ctx context.Context, runnerID string) error {
 
 	if runner.cmd != nil && runner.cmd.Process != nil {
 		_ = runner.cmd.Process.Kill()
+	}
+
+	if runner.logFile != nil {
+		runner.logFile.Close()
 	}
 
 	return os.RemoveAll(runner.Dir)
