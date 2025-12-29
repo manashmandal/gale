@@ -425,9 +425,9 @@ func (h *Handler) gracefulShutdown(runnerID string, jobID int64) {
 
 	// On macOS without --once flag, the runner won't exit on its own after the job.
 	// Wait for Post steps to complete, then send SIGTERM to stop the runner.
-	// Post Setup Go can take 30-60 seconds for large Go installations, Post Checkout is quick.
-	// Using 120 seconds to be safe for slower jobs.
-	postStepWait := 120 * time.Second
+	// Post steps can take variable time - we need to wait long enough for the runner
+	// to finish reporting to GitHub before killing it. 4 minutes should be sufficient.
+	postStepWait := 240 * time.Second
 	h.logger.Info("[DEBUG] waiting for Post steps to complete before stopping runner",
 		"job_id", jobID,
 		"runner_id", runnerID,
