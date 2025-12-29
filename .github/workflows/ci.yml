@@ -26,7 +26,13 @@ jobs:
 
       - name: Run tests with coverage check
         run: |
-          script -q /dev/null go test -v -coverprofile=coverage.out ./internal/...
+          go test -v -coverprofile=coverage.out ./internal/... > /tmp/test-out.txt 2>&1 || true
+          TEST_EXIT=$?
+          cat /tmp/test-out.txt
+          if [ $TEST_EXIT -ne 0 ]; then
+            echo "Tests failed with exit code: $TEST_EXIT"
+            exit 1
+          fi
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           if awk "BEGIN {exit !($COVERAGE < 65)}"; then
