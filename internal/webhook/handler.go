@@ -163,6 +163,104 @@ func (h *Handler) cleanupExitedContainers() {
 	if cleaned > 0 {
 		h.logger.Warn("[DEBUG] cleaned up exited runners", "count", cleaned)
 	}
+
+	// Also cleanup phantom GitHub runners (offline but marked busy)
+	h.cleanupPhantomGitHubRunners()
+}
+
+func (h *Handler) cleanupPhantomGitHubRunners() {
+	token := h.cfg.GitHub.Token
+	if token == "" {
+		return
+	}
+
+	owner := h.cfg.GitHub.Owner
+	if owner == "" {
+		return
+	}
+
+	// Get repos from config
+	repos := h.cfg.GetRepos()
+	if len(repos) == 0 {
+		return
+	}
+
+	for _, repo := range repos {
+		// Construct full repo name (owner/repo)
+		fullRepoName := fmt.Sprintf("%s/%s", owner, repo)
+		h.cleanupPhantomRunnersForRepo(token, fullRepoName)
+	}
+}
+
+func (h *Handler) cleanupPhantomRunnersForRepo(token, repoFullName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// List runners from GitHub
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/actions/runners?per_page=100", repoFullName)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var result struct {
+		Runners []struct {
+			ID     int64  `json:"id"`
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Busy   bool   `json:"busy"`
+		} `json:"runners"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return
+	}
+
+	// Find and delete phantom runners (offline + busy + gale-managed)
+	for _, r := range result.Runners {
+		if r.Status == "offline" && r.Busy && strings.HasPrefix(r.Name, "gale-native-") {
+			h.logger.Info("cleaning up phantom GitHub runner",
+				"runner_name", r.Name,
+				"runner_id", r.ID,
+				"repo", repoFullName,
+			)
+
+			// Try to delete - will fail if still actually busy, which is fine
+			deleteURL := fmt.Sprintf("https://api.github.com/repos/%s/actions/runners/%d", repoFullName, r.ID)
+			delReq, err := http.NewRequestWithContext(ctx, "DELETE", deleteURL, nil)
+			if err != nil {
+				continue
+			}
+			delReq.Header.Set("Accept", "application/vnd.github+json")
+			delReq.Header.Set("Authorization", "Bearer "+token)
+			delReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+			delResp, err := http.DefaultClient.Do(delReq)
+			if err != nil {
+				continue
+			}
+			delResp.Body.Close()
+
+			if delResp.StatusCode == http.StatusNoContent {
+				h.logger.Info("successfully removed phantom runner",
+					"runner_name", r.Name,
+					"runner_id", r.ID,
+				)
+			}
+		}
+	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

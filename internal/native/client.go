@@ -339,17 +339,18 @@ func (c *Client) waitForCompletion(runner *Runner) {
 		runner.Dir, actualExitTime, actualExitTime.Sub(listenerExitTime))
 
 	if !runner.GitHubEphemeral && runner.GitHubToken != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		ghID := runner.GitHubRunnerID
 		if ghID == 0 && runner.Name != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			if foundID, err := findGitHubRunnerID(ctx, runner.GitHubToken, runner.Repo, runner.OrgName, runner.Scope, runner.Name); err == nil {
 				ghID = foundID
 			}
+			cancel()
 		}
 		if ghID != 0 {
-			if err := deleteGitHubRunner(ctx, runner.GitHubToken, runner.Repo, runner.OrgName, runner.Scope, ghID); err != nil {
+			// Retry deletion with backoff - GitHub may still think runner is busy
+			// even after job completed webhook is received
+			if err := deleteGitHubRunnerWithRetry(runner.GitHubToken, runner.Repo, runner.OrgName, runner.Scope, ghID, runner.Name); err != nil {
 				fmt.Fprintf(os.Stderr, "[GALE WARN] Failed to de-register runner %s (id=%d): %v\n", runner.Name, ghID, err)
 			}
 		} else {
@@ -1019,9 +1020,42 @@ func deleteGitHubRunner(ctx context.Context, token, repoURL, orgName, scope stri
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNoContent {
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
 		return nil
 	}
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("failed to delete runner: %s (status %d)", string(body), resp.StatusCode)
+}
+
+func deleteGitHubRunnerWithRetry(token, repoURL, orgName, scope string, runnerID int64, runnerName string) error {
+	maxAttempts := 6
+	baseDelay := 5 * time.Second
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := deleteGitHubRunner(ctx, token, repoURL, orgName, scope, runnerID)
+		cancel()
+
+		if err == nil {
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] Successfully de-registered runner %s (id=%d) on attempt %d\n",
+				runnerName, runnerID, attempt)
+			return nil
+		}
+
+		// Check if it's a "runner is busy" error (HTTP 422)
+		if strings.Contains(err.Error(), "currently running a job") || strings.Contains(err.Error(), "status 422") {
+			if attempt < maxAttempts {
+				delay := baseDelay * time.Duration(attempt)
+				fmt.Fprintf(os.Stderr, "[GALE DEBUG] Runner %s still busy on GitHub (attempt %d/%d), retrying in %v...\n",
+					runnerName, attempt, maxAttempts, delay)
+				time.Sleep(delay)
+				continue
+			}
+		}
+
+		// For other errors or max attempts reached, return the error
+		return err
+	}
+
+	return fmt.Errorf("max retries exceeded")
 }
