@@ -1,5 +1,127 @@
 # Work Log
 
+## 2025-12-29 - Native Runner Isolation and Timeout Coordination
+
+### Issues Fixed Today
+
+#### Issue 1: Symlink Race Condition During Cache Extraction
+
+**Symptom:**
+```
+level=ERROR msg="failed to create runner" error="ensuring runner binary: extracting runner: symlink ../lib/node_modules/corepack/dist/corepack.js /Users/manash/.gale/native-runners/cache/2.330.0/externals/node24/bin/corepack: file exists"
+```
+
+**Root Cause:**
+Multiple runners starting simultaneously were all trying to extract to the same shared cache directory (`~/.gale/native-runners/cache/2.330.0/`). When creating symlinks, one runner would succeed while others failed with "file exists" error.
+
+**Fix (commit c30339c):**
+Removed shared cache entirely. Each runner now downloads and extracts its own copy of the GitHub Actions runner binary directly to its isolated work directory.
+
+```
+Before:
+~/.gale/native-runners/
+├── cache/2.330.0/     # Shared - race condition here
+└── work/
+    ├── runner1/       # Copied from cache
+    └── runner2/       # Symlink conflict!
+
+After:
+~/.gale/native-runners/
+└── work/
+    ├── runner1/       # Downloads & extracts its own binary
+    ├── runner2/       # Downloads & extracts its own binary
+    └── runner3/       # Completely independent
+```
+
+**Files changed:**
+- `internal/native/client.go`: Replaced `EnsureRunnerBinary()` with `downloadAndExtractRunner()`
+- `internal/runner/factory.go`: Removed pre-download of runner binary at startup
+
+---
+
+#### Issue 2: Competing Timeouts Killing Post Steps
+
+**Symptom:**
+- lint job: ✅ All Post steps completed
+- build job: ❌ Post steps stuck at "in_progress"
+- test job: ❌ Post steps skipped/stuck
+
+**Root Cause:**
+Race condition between two timeout mechanisms:
+1. Native client's `waitForAllProcesses`: Waits up to **5 minutes** for process group to exit
+2. Webhook handler's `gracefulShutdown`: Called `StopRunner` after only **70 seconds**
+
+After 70 seconds, `gracefulShutdown` would forcibly kill the process group via SIGTERM while Post steps were still running. The lint job completed faster (under 70s), but build took longer and got killed.
+
+**Fix (commit 1605ab5):**
+Increased `gracefulShutdown` timeout from 70 seconds to **6 minutes**, allowing the native client's process group tracking time to work correctly.
+
+**Files changed:**
+- `internal/webhook/handler.go`: Changed polling from 30×2s (70s) to 72×5s (6 minutes)
+
+---
+
+#### Issue 3: macOS Ephemeral Mode (User's Fix)
+
+**Root Cause:**
+On macOS, the upstream GitHub Actions runner's `--ephemeral` mode exits before Post steps complete.
+
+**Fix:**
+On macOS, register runner as non-ephemeral but use `run.sh --once` to emulate ephemeral semantics, then de-register via GitHub API after exit.
+
+```go
+useGitHubEphemeral := runtime.GOOS != "darwin"
+
+if useGitHubEphemeral {
+    configArgs = append(configArgs, "--ephemeral")
+}
+
+// For macOS, use --once flag instead
+if !useGitHubEphemeral {
+    runArgs = append(runArgs, "--once")
+}
+```
+
+**Files changed:**
+- `internal/native/client.go`: Added PGID tracking, `--once` flag, GitHub API de-registration
+
+---
+
+### Debug Infrastructure Added
+
+**Makefile targets (commits 95356e0, dd674c4, 9c9b3f4):**
+```makefile
+make debug-logs          # Show gale webhook server logs
+make debug-runner-logs   # Show native runner logs
+make debug-runner-status # Show runner exit status and signals
+make debug-processes     # Show gale-related processes
+make debug-cleanup       # List exited runners pending cleanup
+make debug-all           # Export all debug info to .debug/gale-debug-*.txt
+```
+
+---
+
+### Commits Today
+
+| Commit | Description |
+|--------|-------------|
+| 95356e0 | Add debug commands to Makefile |
+| dd674c4 | Export debug-all output to timestamped file |
+| 9c9b3f4 | Use local build for debug commands |
+| c30339c | Remove shared cache, fully isolate runners |
+| 1605ab5 | Increase graceful shutdown timeout to 6 minutes |
+
+---
+
+### Key Learnings
+
+1. **Process isolation is critical**: Shared state (cache directories) between parallel processes causes race conditions
+2. **Competing timeouts cause subtle bugs**: When multiple components have timeouts, ensure outer > inner
+3. **macOS runner behavior differs**: GitHub Actions runner behaves differently on macOS with ephemeral mode
+4. **Debug infrastructure is essential**: `make debug-all` made remote troubleshooting possible
+
+---
+
 ## 2025-12-29 - Native Runner Post Steps Fix
 
 ### Issue
