@@ -10,6 +10,8 @@ import (
 	"github.com/manashmandal/gale/internal/native"
 )
 
+type DockerPermissionError = docker.PermissionError
+
 func NewClient(cfg *config.Config, logger *slog.Logger) (Client, error) {
 	switch cfg.Runner.Mode {
 	case "native":
@@ -24,13 +26,13 @@ func NewClient(cfg *config.Config, logger *slog.Logger) (Client, error) {
 func newDockerClient(cfg *config.Config, logger *slog.Logger) (Client, error) {
 	dockerClient, err := docker.NewClient(cfg.Docker.Host)
 	if err != nil {
-		return nil, fmt.Errorf("creating docker client: %w", err)
+		return nil, docker.WrapPermissionError(fmt.Errorf("creating docker client: %w", err))
 	}
 
 	logger.Info("ensuring runner image is available", "image", cfg.Runner.Image)
 	if err := dockerClient.EnsureImage(context.Background(), cfg.Runner.Image); err != nil {
 		dockerClient.Close()
-		return nil, fmt.Errorf("ensuring runner image: %w", err)
+		return nil, docker.WrapPermissionError(fmt.Errorf("ensuring runner image: %w", err))
 	}
 
 	logger.Info("using docker runner mode", "image", cfg.Runner.Image)

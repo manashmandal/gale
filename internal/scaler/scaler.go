@@ -72,7 +72,7 @@ func NewWithOptions(cfg *config.Config, logger *slog.Logger, opts Options) (*Sca
 	} else {
 		dockerClient, err = docker.NewClient(cfg.Docker.Host)
 		if err != nil {
-			return nil, fmt.Errorf("creating docker client: %w", err)
+			return nil, docker.WrapPermissionError(fmt.Errorf("creating docker client: %w", err))
 		}
 	}
 
@@ -117,7 +117,7 @@ func (s *Scaler) Run(ctx context.Context) error {
 	// Ensure runner image is available
 	s.logger.Info("ensuring runner image is available", "image", s.cfg.Runner.Image)
 	if err := s.docker.EnsureImage(ctx, s.cfg.Runner.Image); err != nil {
-		return fmt.Errorf("ensuring runner image: %w", err)
+		return docker.WrapPermissionError(fmt.Errorf("ensuring runner image: %w", err))
 	}
 
 	ticker := time.NewTicker(s.cfg.Scaler.PollInterval)
