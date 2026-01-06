@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/manashmandal/gale/internal/config"
+	"github.com/manashmandal/gale/internal/docker"
 	"github.com/manashmandal/gale/internal/github"
 	"github.com/manashmandal/gale/internal/secret"
 	"github.com/manashmandal/gale/internal/webhook"
@@ -370,6 +372,10 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 
 	handler, err := webhook.NewHandler(cfg, logger)
 	if err != nil {
+		var permErr *docker.PermissionError
+		if errors.As(err, &permErr) {
+			fmt.Fprintf(os.Stderr, "\n%s\n\n", permErr.Help())
+		}
 		return fmt.Errorf("creating webhook handler: %w", err)
 	}
 	defer handler.Close()
@@ -448,6 +454,17 @@ func runWithFunnel(ctx context.Context, cancel context.CancelFunc, sigCh chan os
 
 	// Create tsnet server
 	stateDir := filepath.Join(os.TempDir(), "gale-tsnet")
+
+	// Check if state directory exists and is accessible
+	if err := checkStateDirPermissions(stateDir); err != nil {
+		fmt.Fprintf(os.Stderr, "\n%sTailscale state directory permission error.%s\n\n", colorRed, colorReset)
+		fmt.Fprintf(os.Stderr, "The directory %s has incorrect permissions.\n", stateDir)
+		fmt.Fprintf(os.Stderr, "This usually happens when gale was previously run with sudo.\n\n")
+		fmt.Fprintf(os.Stderr, "To fix this, run:\n")
+		fmt.Fprintf(os.Stderr, "  sudo rm -rf %s\n\n", stateDir)
+		return fmt.Errorf("state directory permission denied: %w", err)
+	}
+
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return fmt.Errorf("creating state dir: %w", err)
 	}
@@ -506,6 +523,13 @@ waitLoop:
 
 	if upErr != nil {
 		fmt.Printf(" %s✖%s\n", colorRed, colorReset)
+		if isTailscalePermissionError(upErr) {
+			fmt.Fprintf(os.Stderr, "\n%sTailscale state directory permission error.%s\n\n", colorRed, colorReset)
+			fmt.Fprintf(os.Stderr, "The directory %s has incorrect permissions.\n", stateDir)
+			fmt.Fprintf(os.Stderr, "This usually happens when gale was previously run with sudo.\n\n")
+			fmt.Fprintf(os.Stderr, "To fix this, run:\n")
+			fmt.Fprintf(os.Stderr, "  sudo rm -rf %s\n\n", stateDir)
+		}
 		return fmt.Errorf("connecting to Tailscale: %w", upErr)
 	}
 	fmt.Printf(" %s✓%s\n", colorGreen, colorReset)
@@ -804,4 +828,40 @@ func validateFunnelAccess(ctx context.Context, hostname, healthURL string, progr
 	}
 
 	return fmt.Errorf("validation failed after %d attempts: %w", maxAttempts, lastErr)
+}
+
+func checkStateDirPermissions(dir string) error {
+	info, err := os.Stat(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("%s exists but is not a directory", dir)
+	}
+
+	testFile := filepath.Join(dir, ".gale-permission-test")
+	f, err := os.OpenFile(testFile, os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		if os.IsPermission(err) {
+			return err
+		}
+		return nil
+	}
+	f.Close()
+	os.Remove(testFile)
+
+	return nil
+}
+
+func isTailscalePermissionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "permission denied") &&
+		(strings.Contains(errStr, "gale-tsnet") || strings.Contains(errStr, "tailscaled"))
 }

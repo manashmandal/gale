@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -62,16 +63,31 @@ func init() {
 func getDockerClient() (*docker.Client, error) {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
-		// Use default if config doesn't exist
-		return docker.NewClient("")
+		client, clientErr := docker.NewClient("")
+		if clientErr != nil {
+			return nil, docker.WrapPermissionError(clientErr)
+		}
+		return client, nil
 	}
-	return docker.NewClient(cfg.Docker.Host)
+	client, err := docker.NewClient(cfg.Docker.Host)
+	if err != nil {
+		return nil, docker.WrapPermissionError(err)
+	}
+	return client, nil
+}
+
+func handleDockerError(err error) error {
+	var permErr *docker.PermissionError
+	if errors.As(err, &permErr) {
+		fmt.Fprintf(os.Stderr, "\n%s\n\n", permErr.Help())
+	}
+	return err
 }
 
 func runRunnersList(cmd *cobra.Command, args []string) error {
 	client, err := getDockerClient()
 	if err != nil {
-		return fmt.Errorf("connecting to docker: %w", err)
+		return handleDockerError(fmt.Errorf("connecting to docker: %w", err))
 	}
 	defer client.Close()
 
@@ -111,7 +127,7 @@ func runRunnersList(cmd *cobra.Command, args []string) error {
 func runRunnersClean(cmd *cobra.Command, args []string) error {
 	client, err := getDockerClient()
 	if err != nil {
-		return fmt.Errorf("connecting to docker: %w", err)
+		return handleDockerError(fmt.Errorf("connecting to docker: %w", err))
 	}
 	defer client.Close()
 
@@ -133,7 +149,7 @@ func runRunnersClean(cmd *cobra.Command, args []string) error {
 func runRunnersStop(cmd *cobra.Command, args []string) error {
 	client, err := getDockerClient()
 	if err != nil {
-		return fmt.Errorf("connecting to docker: %w", err)
+		return handleDockerError(fmt.Errorf("connecting to docker: %w", err))
 	}
 	defer client.Close()
 

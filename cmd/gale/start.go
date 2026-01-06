@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/manashmandal/gale/internal/config"
 	"github.com/manashmandal/gale/internal/daemon"
+	"github.com/manashmandal/gale/internal/docker"
 	"github.com/manashmandal/gale/internal/scaler"
 	"github.com/spf13/cobra"
 )
@@ -156,6 +158,10 @@ func runScaler(d *daemon.Daemon) error {
 
 	s, err := scaler.NewWithOptions(cfg, logger, opts)
 	if err != nil {
+		var permErr *docker.PermissionError
+		if errors.As(err, &permErr) {
+			fmt.Fprintf(os.Stderr, "\n%s\n\n", permErr.Help())
+		}
 		return fmt.Errorf("creating scaler: %w", err)
 	}
 	defer s.Close()
@@ -179,6 +185,10 @@ func runScaler(d *daemon.Daemon) error {
 	}()
 
 	if err := s.Run(ctx); err != nil && err != context.Canceled {
+		var permErr *docker.PermissionError
+		if errors.As(err, &permErr) {
+			fmt.Fprintf(os.Stderr, "\n%s\n\n", permErr.Help())
+		}
 		return fmt.Errorf("scaler error: %w", err)
 	}
 
