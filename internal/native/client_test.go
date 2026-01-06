@@ -548,6 +548,237 @@ func TestGetRegistrationToken_ExtractsOwnerRepo(t *testing.T) {
 	}
 }
 
+func TestProcessGroupAlive(t *testing.T) {
+	// Test with invalid PGID
+	alive, err := processGroupAlive(0)
+	if alive || err != nil {
+		t.Errorf("processGroupAlive(0) = %v, %v; want false, nil", alive, err)
+	}
+
+	alive, err = processGroupAlive(-1)
+	if alive || err != nil {
+		t.Errorf("processGroupAlive(-1) = %v, %v; want false, nil", alive, err)
+	}
+}
+
+func TestProcessAlive(t *testing.T) {
+	// Test with invalid PID
+	alive, err := processAlive(0)
+	if alive || err != nil {
+		t.Errorf("processAlive(0) = %v, %v; want false, nil", alive, err)
+	}
+
+	alive, err = processAlive(-1)
+	if alive || err != nil {
+		t.Errorf("processAlive(-1) = %v, %v; want false, nil", alive, err)
+	}
+
+	// Test with current process (should be alive)
+	alive, err = processAlive(os.Getpid())
+	if !alive {
+		t.Errorf("processAlive(current) = %v, %v; want true, nil", alive, err)
+	}
+}
+
+func TestReadLocalRunnerID(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Test with valid file
+	validPath := filepath.Join(tmpDir, ".runner")
+	validContent := `{"agentId": 12345, "agentName": "test-runner"}`
+	if err := os.WriteFile(validPath, []byte(validContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := readLocalRunnerID(validPath)
+	if err != nil {
+		t.Errorf("readLocalRunnerID() error = %v", err)
+	}
+	if id != 12345 {
+		t.Errorf("readLocalRunnerID() = %d, want 12345", id)
+	}
+
+	// Test with missing file
+	_, err = readLocalRunnerID("/nonexistent/file")
+	if err == nil {
+		t.Error("readLocalRunnerID() expected error for missing file")
+	}
+
+	// Test with invalid JSON
+	invalidPath := filepath.Join(tmpDir, ".runner-invalid")
+	if err := os.WriteFile(invalidPath, []byte("not json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = readLocalRunnerID(invalidPath)
+	if err == nil {
+		t.Error("readLocalRunnerID() expected error for invalid JSON")
+	}
+
+	// Test with missing agentId
+	noIdPath := filepath.Join(tmpDir, ".runner-noid")
+	if err := os.WriteFile(noIdPath, []byte(`{"agentName": "test"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = readLocalRunnerID(noIdPath)
+	if err == nil {
+		t.Error("readLocalRunnerID() expected error for missing agentId")
+	}
+}
+
+func TestParseRepoOwnerRepo(t *testing.T) {
+	tests := []struct {
+		url       string
+		wantOwner string
+		wantRepo  string
+		wantErr   bool
+	}{
+		{"https://github.com/owner/repo", "owner", "repo", false},
+		{"https://github.com/owner/repo/", "owner", "repo", false},
+		{"https://github.com/owner/repo.git", "owner", "repo", false},
+		{"invalid", "", "", true},
+		{"https://github.com/single", "", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			owner, repo, err := parseRepoOwnerRepo(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseRepoOwnerRepo() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if owner != tt.wantOwner {
+				t.Errorf("owner = %q, want %q", owner, tt.wantOwner)
+			}
+			if repo != tt.wantRepo {
+				t.Errorf("repo = %q, want %q", repo, tt.wantRepo)
+			}
+		})
+	}
+}
+
+func TestGetProcessesByCwd(t *testing.T) {
+	// Test with non-existent directory
+	pids := getProcessesByCwd("/nonexistent/directory/path")
+	if len(pids) != 0 {
+		t.Errorf("getProcessesByCwd() for nonexistent dir = %v, want empty", pids)
+	}
+}
+
+func TestGetProcessesViaLsof(t *testing.T) {
+	// Test with non-existent directory
+	pids := getProcessesViaLsof("/nonexistent/directory/path")
+	if len(pids) != 0 {
+		t.Errorf("getProcessesViaLsof() for nonexistent dir = %v, want empty", pids)
+	}
+}
+
+func TestHasRecentTempScripts(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Test with non-existent directory
+	result := hasRecentTempScripts("/nonexistent/directory")
+	if result {
+		t.Error("hasRecentTempScripts() for nonexistent dir = true, want false")
+	}
+
+	// Test with empty temp directory
+	tempDir := filepath.Join(tmpDir, "_work", "_temp")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	result = hasRecentTempScripts(tmpDir)
+	if result {
+		t.Error("hasRecentTempScripts() for empty dir = true, want false")
+	}
+
+	// Test with old script (should return false)
+	oldScript := filepath.Join(tempDir, "old.sh")
+	if err := os.WriteFile(oldScript, []byte("#!/bin/bash"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Set modification time to 5 minutes ago
+	oldTime := time.Now().Add(-5 * time.Minute)
+	os.Chtimes(oldScript, oldTime, oldTime)
+
+	result = hasRecentTempScripts(tmpDir)
+	if result {
+		t.Error("hasRecentTempScripts() for old script = true, want false")
+	}
+}
+
+func TestDownloadFile_InvalidURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "test.file")
+
+	err := downloadFile(context.Background(), "http://invalid.localhost.test/file", destPath)
+	if err == nil {
+		t.Error("downloadFile() expected error for invalid URL")
+	}
+}
+
+func TestClient_CleanupExitedRunners_ZeroExitTime(t *testing.T) {
+	tmpDir := t.TempDir()
+	client, _ := NewClient(tmpDir)
+
+	// Runner with zero exit time should NOT be cleaned up
+	client.runners["r1"] = &Runner{ID: "r1", Dir: "", Status: "exited"}
+
+	count, err := client.CleanupExitedRunners(context.Background())
+	if err != nil {
+		t.Fatalf("CleanupExitedRunners() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 (runner with zero exit time should not be cleaned)", count)
+	}
+}
+
+func TestRunner_AllFields(t *testing.T) {
+	now := time.Now()
+	exitTime := now.Add(time.Minute)
+
+	r := Runner{
+		ID:              "test-id",
+		Name:            "test-name",
+		PID:             1234,
+		PGID:            5678,
+		Dir:             "/test/dir",
+		Status:          "running",
+		Repo:            "https://github.com/owner/repo",
+		Scope:           "repo",
+		OrgName:         "myorg",
+		GitHubToken:     "token",
+		GitHubRunnerID:  99999,
+		GitHubEphemeral: true,
+		StartedAt:       now,
+		ExitedAt:        exitTime,
+	}
+
+	if r.Name != "test-name" {
+		t.Errorf("Name = %q, want test-name", r.Name)
+	}
+	if r.PGID != 5678 {
+		t.Errorf("PGID = %d, want 5678", r.PGID)
+	}
+	if r.Scope != "repo" {
+		t.Errorf("Scope = %q, want repo", r.Scope)
+	}
+	if r.OrgName != "myorg" {
+		t.Errorf("OrgName = %q, want myorg", r.OrgName)
+	}
+	if r.GitHubToken != "token" {
+		t.Errorf("GitHubToken = %q, want token", r.GitHubToken)
+	}
+	if r.GitHubRunnerID != 99999 {
+		t.Errorf("GitHubRunnerID = %d, want 99999", r.GitHubRunnerID)
+	}
+	if !r.GitHubEphemeral {
+		t.Error("GitHubEphemeral = false, want true")
+	}
+	if !r.ExitedAt.Equal(exitTime) {
+		t.Errorf("ExitedAt = %v, want %v", r.ExitedAt, exitTime)
+	}
+}
+
 // Helper to create a test tar.gz file
 func createTestTarGz(t *testing.T, path string, files map[string]string) {
 	t.Helper()
