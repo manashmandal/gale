@@ -123,9 +123,22 @@ func runWebhookRegister(cmd *cobra.Command, args []string) error {
 		if hostname == "" {
 			hostname = getDefaultFunnelHostname()
 		}
-		dnsName, err := getTailscaleDNSName(ctx, hostname)
-		if err != nil {
-			return fmt.Errorf("detecting Tailscale URL: %w\n\nUse --url to specify the webhook URL manually", err)
+
+		// Prefer cached DNS name from config (set by webhook --funnel)
+		// This ensures we use the same DNS name that tsnet actually gets,
+		// which may differ from what the main Tailscale daemon reports
+		var dnsName string
+		if cfg.Webhook.FunnelDNSName != "" {
+			dnsName = cfg.Webhook.FunnelDNSName
+			fmt.Println()
+			fmt.Println("Using cached Funnel DNS name from previous webhook session.")
+			fmt.Println("  (Run 'gale webhook --funnel' first to refresh if needed)")
+		} else {
+			var err error
+			dnsName, err = getTailscaleDNSName(ctx, hostname)
+			if err != nil {
+				return fmt.Errorf("detecting Tailscale URL: %w\n\nUse --url to specify the webhook URL manually\nOr run 'gale webhook --funnel' first to cache the DNS name", err)
+			}
 		}
 		webhookURL = fmt.Sprintf("https://%s/webhook", dnsName)
 		fmt.Println()
