@@ -26,21 +26,36 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Run tests with coverage check
+      - name: Run tests with coverage
         run: |
-          go test -v -coverprofile=coverage.out ./internal/... > /tmp/test-out.txt 2>&1 || true
-          TEST_EXIT=$?
-          cat /tmp/test-out.txt
+          go test -v -coverprofile=coverage.out ./internal/... 2>&1 | tee /tmp/test-out.txt
+          TEST_EXIT=${PIPESTATUS[0]}
           if [ $TEST_EXIT -ne 0 ]; then
             echo "Tests failed with exit code: $TEST_EXIT"
             exit 1
           fi
+
+      - name: Check coverage threshold
+        run: |
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           if awk "BEGIN {exit !($COVERAGE < 55)}"; then
             echo "Coverage ${COVERAGE}% is below minimum 55%"
             exit 1
           fi
+
+      - name: Convert coverage to LCOV
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          go install github.com/jandelgado/gcov2lcov@latest
+          gcov2lcov -infile=coverage.out -outfile=coverage.lcov
+
+      - name: Coverage Report
+        if: matrix.os == 'ubuntu-latest'
+        uses: manashmandal/litecov@v1
+        with:
+          coverage-file: coverage.lcov
+          threshold: 55
 
   lint:
     runs-on: ubuntu-latest

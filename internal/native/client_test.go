@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -713,6 +714,174 @@ func TestDownloadFile_InvalidURL(t *testing.T) {
 	err := downloadFile(context.Background(), "http://invalid.localhost.test/file", destPath)
 	if err == nil {
 		t.Error("downloadFile() expected error for invalid URL")
+	}
+}
+
+func TestDownloadFile_ContextCanceled(t *testing.T) {
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "test.file")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	err := downloadFile(ctx, "http://example.com/file", destPath)
+	if err == nil {
+		t.Error("downloadFile() expected error for canceled context")
+	}
+}
+
+func TestGetProcessesByCwd_CurrentDir(t *testing.T) {
+	// Test with current directory - should find at least the test process
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Skip("cannot get current directory")
+	}
+
+	// This tests that the function doesn't crash and handles valid input
+	pids := getProcessesByCwd(cwd)
+	// Result may vary - just check it doesn't panic
+	_ = pids
+}
+
+func TestGetProcessesViaLsof_CurrentDir(t *testing.T) {
+	// Test with temp directory to avoid long scans
+	tmpDir := t.TempDir()
+
+	// Create a file and keep it open
+	f, err := os.Create(filepath.Join(tmpDir, "test.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	// This tests that the function works without panicking
+	pids := getProcessesViaLsof(tmpDir)
+	// The current process should have the file open
+	_ = pids
+}
+
+func TestHasRecentTempScripts_RecentScript(t *testing.T) {
+	tmpDir := t.TempDir()
+	tempDir := filepath.Join(tmpDir, "_work", "_temp")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a recent script (just created, should be recent)
+	recentScript := filepath.Join(tempDir, "recent.sh")
+	if err := os.WriteFile(recentScript, []byte("#!/bin/bash\necho hello"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	result := hasRecentTempScripts(tmpDir)
+	if !result {
+		t.Error("hasRecentTempScripts() = false, want true for recent script")
+	}
+}
+
+func TestHasRecentTempScripts_NonShFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	tempDir := filepath.Join(tmpDir, "_work", "_temp")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a non-.sh file (should be ignored)
+	if err := os.WriteFile(filepath.Join(tempDir, "test.txt"), []byte("not a script"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := hasRecentTempScripts(tmpDir)
+	if result {
+		t.Error("hasRecentTempScripts() = true, want false for non-.sh file")
+	}
+}
+
+func TestProcessGroupAlive_CurrentProcess(t *testing.T) {
+	// Test with current process group
+	pgid := syscall.Getpgrp()
+	alive, err := processGroupAlive(pgid)
+	if err != nil {
+		t.Errorf("processGroupAlive() error = %v", err)
+	}
+	if !alive {
+		t.Error("processGroupAlive(current) = false, want true")
+	}
+}
+
+func TestProcessGroupAlive_NonExistent(t *testing.T) {
+	// Use a very high PGID that's unlikely to exist
+	alive, err := processGroupAlive(999999999)
+	if err != nil {
+		// EPERM is also a valid response if process exists but we can't signal it
+		// ESRCH means not found which is expected
+	}
+	if alive {
+		t.Error("processGroupAlive(999999999) = true, want false")
+	}
+}
+
+func TestWaitForAllProcesses_ImmediateExit(t *testing.T) {
+	tmpDir := t.TempDir()
+	client, _ := NewClient(tmpDir)
+
+	// Create a runner with an invalid PGID (will exit immediately)
+	runner := &Runner{
+		ID:   "test-runner",
+		PGID: -1,
+		Dir:  tmpDir,
+	}
+
+	// This should complete quickly since PGID is invalid
+	start := time.Now()
+	client.waitForAllProcesses(runner, 5*time.Second)
+	elapsed := time.Since(start)
+
+	// Should complete in the quick-check phase (within a few seconds)
+	if elapsed > 10*time.Second {
+		t.Errorf("waitForAllProcesses took %v, expected < 10s for immediate exit", elapsed)
+	}
+}
+
+func TestClient_StopRunner_WithExitedRunner(t *testing.T) {
+	tmpDir := t.TempDir()
+	client, _ := NewClient(tmpDir)
+
+	client.runners["r1"] = &Runner{ID: "r1", Status: "exited", PGID: 0}
+
+	err := client.StopRunner(context.Background(), "r1", 1)
+	if err != nil {
+		t.Errorf("StopRunner() error = %v", err)
+	}
+
+	// Status should be updated
+	if client.runners["r1"].Status != "exited" {
+		t.Errorf("Status = %q, want exited", client.runners["r1"].Status)
+	}
+}
+
+func TestRemoveRunner_WithPGID(t *testing.T) {
+	tmpDir := t.TempDir()
+	client, _ := NewClient(tmpDir)
+
+	runnerDir := filepath.Join(tmpDir, "work", "r1")
+	os.MkdirAll(runnerDir, 0755)
+
+	// Use invalid PGID to test the kill path without actually killing anything
+	client.runners["r1"] = &Runner{
+		ID:     "r1",
+		Dir:    runnerDir,
+		Status: "exited",
+		PGID:   -99999, // Invalid, will fail silently
+	}
+
+	err := client.RemoveRunner(context.Background(), "r1")
+	if err != nil {
+		t.Errorf("RemoveRunner() error = %v", err)
+	}
+
+	if _, exists := client.runners["r1"]; exists {
+		t.Error("runner still exists after removal")
 	}
 }
 
