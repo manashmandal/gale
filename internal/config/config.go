@@ -21,9 +21,10 @@ type Config struct {
 }
 
 type WebhookConfig struct {
-	Port       int                       `yaml:"port"`                 // Port to listen on (default 8080)
-	Secret     string                    `yaml:"secret"`               // Webhook secret for signature verification
-	Registered map[string]RegisteredHook `yaml:"registered,omitempty"` // Registered webhooks (target -> hook info)
+	Port          int                       `yaml:"port"`                      // Port to listen on (default 8080)
+	Secret        string                    `yaml:"secret"`                    // Webhook secret for signature verification
+	Registered    map[string]RegisteredHook `yaml:"registered,omitempty"`      // Registered webhooks (target -> hook info)
+	FunnelDNSName string                    `yaml:"funnel_dns_name,omitempty"` // Actual DNS name from tsnet server (may differ from main Tailscale daemon)
 }
 
 type RegisteredHook struct {

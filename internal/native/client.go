@@ -379,6 +379,40 @@ func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 	startTime := time.Now()
 	iteration := 0
 
+	// Quick-check phase: For the first 30s, only check process group
+	// This avoids expensive lsof calls when processes exit quickly
+	quickCheckDuration := 30 * time.Second
+	quickCheckDeadline := startTime.Add(quickCheckDuration)
+
+	for time.Now().Before(quickCheckDeadline) && time.Now().Before(deadline) {
+		iteration++
+
+		pgAlive := false
+		if runner.PGID > 0 {
+			pgAlive, _ = processGroupAlive(runner.PGID)
+		}
+
+		// In quick-check phase, if process group is gone, we're likely done
+		if !pgAlive {
+			// Double-check after a brief pause
+			time.Sleep(500 * time.Millisecond)
+			pgAlive, _ = processGroupAlive(runner.PGID)
+			if !pgAlive {
+				fmt.Fprintf(os.Stderr, "[GALE DEBUG] Process group exited during quick-check phase after %v (iterations=%d)\n",
+					time.Since(startTime), iteration)
+				// Do one final check with all methods before returning
+				break
+			}
+		}
+
+		if iteration%5 == 0 {
+			fmt.Fprintf(os.Stderr, "[GALE DEBUG] [quick-check iter=%d] pgAlive=%v (elapsed=%v)\n",
+				iteration, pgAlive, time.Since(startTime))
+		}
+		time.Sleep(checkInterval)
+	}
+
+	// Full-check phase: Use all detection methods
 	for time.Now().Before(deadline) {
 		iteration++
 
@@ -387,18 +421,32 @@ func (c *Client) waitForAllProcesses(runner *Runner, maxWait time.Duration) {
 			pgAlive, _ = processGroupAlive(runner.PGID)
 		}
 
-		cwdPids := getProcessesByCwd(runner.Dir)
-		lsofPids := getProcessesViaLsof(runner.Dir)
-		hasRecentScripts := hasRecentTempScripts(runner.Dir)
+		// Skip expensive lsof checks if process group already exited
+		var cwdPids, lsofPids []string
+		var hasRecentScripts bool
+
+		if pgAlive {
+			// Process group still alive, check all methods
+			cwdPids = getProcessesByCwd(runner.Dir)
+			lsofPids = getProcessesViaLsof(runner.Dir)
+			hasRecentScripts = hasRecentTempScripts(runner.Dir)
+		} else {
+			// Process group exited, use faster checks
+			cwdPids = getProcessesByCwd(runner.Dir)
+			hasRecentScripts = hasRecentTempScripts(runner.Dir)
+			// Only check lsof if cwd check found something or scripts are recent
+			if len(cwdPids) > 0 || hasRecentScripts {
+				lsofPids = getProcessesViaLsof(runner.Dir)
+			}
+		}
 
 		allDone := !pgAlive && len(cwdPids) == 0 && len(lsofPids) == 0 && !hasRecentScripts
 		if allDone {
 			time.Sleep(2 * time.Second)
 			cwdPids = getProcessesByCwd(runner.Dir)
-			lsofPids = getProcessesViaLsof(runner.Dir)
 			hasRecentScripts = hasRecentTempScripts(runner.Dir)
 
-			if len(cwdPids) == 0 && len(lsofPids) == 0 && !hasRecentScripts {
+			if len(cwdPids) == 0 && !hasRecentScripts {
 				fmt.Fprintf(os.Stderr, "[GALE DEBUG] All processes completed after %v (iterations=%d)\n",
 					time.Since(startTime), iteration)
 				return
@@ -458,10 +506,17 @@ func processAlive(pid int) (bool, error) {
 // This is the most reliable method as job scripts run with CWD set to the runner work dir.
 func getProcessesByCwd(dir string) []string {
 	// lsof -d cwd finds processes by their current working directory
-	cmd := exec.Command("sh", "-c",
+	// Use 10s timeout to prevent hanging on slow/stuck lsof
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c",
 		fmt.Sprintf("lsof -d cwd 2>/dev/null | grep -F '%s' | awk '{print $2}' | sort -u", dir))
 	output, err := cmd.Output()
 	if err != nil || len(output) == 0 {
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Fprintf(os.Stderr, "[GALE WARN] getProcessesByCwd timed out after 10s\n")
+		}
 		return nil
 	}
 
@@ -481,9 +536,16 @@ func getProcessesByCwd(dir string) []string {
 func getProcessesViaLsof(dir string) []string {
 	// lsof +D recursively searches directory for open files
 	// Use -t for terse output (just PIDs)
-	cmd := exec.Command("lsof", "-t", "+D", dir)
+	// Use 30s timeout - lsof +D can be slow on large directories
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "lsof", "-t", "+D", dir)
 	output, err := cmd.Output()
 	if err != nil || len(output) == 0 {
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Fprintf(os.Stderr, "[GALE WARN] getProcessesViaLsof timed out after 30s\n")
+		}
 		return nil
 	}
 
@@ -505,12 +567,19 @@ func hasRecentTempScripts(runnerDir string) bool {
 
 	// Method 1: Check if any bash process is running a script from this temp dir
 	// This is the most reliable way to detect running steps
-	cmd := exec.Command("sh", "-c",
+	// Use 5s timeout to prevent hanging on slow pgrep
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c",
 		fmt.Sprintf("pgrep -f '%s.*\\.sh' 2>/dev/null", tempDir))
 	if output, err := cmd.Output(); err == nil && len(strings.TrimSpace(string(output))) > 0 {
 		pids := strings.TrimSpace(string(output))
 		fmt.Fprintf(os.Stderr, "[GALE DEBUG] hasRecentTempScripts: pgrep found running scripts, pids=%s\n", pids)
 		return true
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(os.Stderr, "[GALE WARN] hasRecentTempScripts pgrep timed out after 5s\n")
 	}
 
 	// Method 2: Check for recently created/modified scripts (fallback)
@@ -525,9 +594,10 @@ func hasRecentTempScripts(runnerDir string) bool {
 			if err != nil {
 				continue
 			}
-			// If script was created/modified in last 2 minutes, step might still be running
+			// If script was created/modified in last 30 seconds, step might still be running
+			// Reduced from 2 minutes to be less conservative and prevent false positives
 			age := time.Since(info.ModTime())
-			if age < 2*time.Minute {
+			if age < 30*time.Second {
 				fmt.Fprintf(os.Stderr, "[GALE DEBUG] hasRecentTempScripts: recent script %s age=%v\n", entry.Name(), age)
 				return true
 			}
@@ -917,11 +987,17 @@ func parseRepoOwnerRepo(repoURL string) (string, string, error) {
 	repoURL = strings.TrimSuffix(repoURL, "/")
 	repoURL = strings.TrimSuffix(repoURL, ".git")
 	parts := strings.Split(repoURL, "/")
-	if len(parts) < 2 {
+	// URL format should be https://github.com/owner/repo (5 parts minimum)
+	// or http://github.com/owner/repo
+	if len(parts) < 5 {
 		return "", "", fmt.Errorf("invalid repo URL: %s", repoURL)
 	}
 	owner := parts[len(parts)-2]
 	repo := parts[len(parts)-1]
+	// Validate that owner and repo are not empty
+	if owner == "" || repo == "" {
+		return "", "", fmt.Errorf("invalid repo URL: %s", repoURL)
+	}
 	return owner, repo, nil
 }
 

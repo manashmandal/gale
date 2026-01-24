@@ -547,7 +547,27 @@ waitLoop:
 		dnsName = dnsName[:len(dnsName)-1]
 	}
 
+	// Save actual tsnet DNS name to config if changed
+	// This is important because tsnet may get a different DNS name than the main Tailscale daemon
+	// (e.g., with a "-1" suffix if hostname conflicts)
+	if cfg.Webhook.FunnelDNSName != dnsName {
+		cfg.Webhook.FunnelDNSName = dnsName
+		if err := cfg.Save(cfgFile); err != nil {
+			fmt.Printf("  %s⚠ Warning: could not save DNS name to config: %v%s\n", colorYellow, err, colorReset)
+		}
+	}
+
 	funnelURL := fmt.Sprintf("https://%s/webhook", dnsName)
+
+	// Check if any registered webhooks have mismatched URLs
+	for target, hook := range cfg.GetRegisteredHooks() {
+		expectedURL := fmt.Sprintf("https://%s/webhook", dnsName)
+		if hook.URL != "" && hook.URL != expectedURL {
+			fmt.Printf("  %s⚠ Warning: Registered webhook for %s uses URL %s%s\n", colorYellow, target, hook.URL, colorReset)
+			fmt.Printf("    %sbut the actual Funnel URL is %s%s\n", colorYellow, expectedURL, colorReset)
+			fmt.Printf("    %sConsider re-registering with: gale webhook register %s%s\n", colorYellow, target, colorReset)
+		}
+	}
 
 	fmt.Print("  • Creating Funnel listener...")
 
